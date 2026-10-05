@@ -139,6 +139,10 @@
   -webkit-mask-image: radial-gradient(ellipse 85% 65% at 50% 25%, black 20%, transparent 85%);
 }
 
+[data-interactive-dots="true"] .dither-pattern {
+  display: none !important;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
