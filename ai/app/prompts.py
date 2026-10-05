@@ -7,12 +7,13 @@ def build_pr_analysis_prompt(pr: AnalyzeRequest) -> str:
     """
     Constructs an optimized, token-efficient prompt for Gemma 4 containing
     essential facts, maintainer rubric, compact examples, and expected JSON output.
+    Defensively truncates inputs: body to 1500 chars, patches to 800 chars, max 3 files.
     """
     ctx = pr.context or {}
 
-    body_text = (pr.body or "").strip()
+    # Defensively cut input size
+    body_text = (pr.body or "").strip()[:1500]
     body_length = ctx.get("body_length", len(body_text))
-    body_snippet = body_text[:300] + ("..." if len(body_text) > 300 else "")
 
     unchecked_checklist = ctx.get("unchecked_checklist_items", 0)
 
@@ -68,22 +69,21 @@ def build_pr_analysis_prompt(pr: AnalyzeRequest) -> str:
     author_prs_7d = ctx.get("author_prs_last_7d", 0)
     merged_prs = ctx.get("author_merged_prs_in_repo", 0)
 
-    # Compact file diffs: max 2 files, 400 chars patch each
+    # Defensively cut files to max 3, each patch to 800 chars
     files_summary = []
-    for f in pr.files[:2]:
-        patch = (f.patch or "").strip()
-        if len(patch) > 400:
-            patch = patch[:400] + "\n...[truncated]..."
+    for f in pr.files[:3]:
+        patch = (f.patch or "").strip()[:800]
         files_summary.append(f"{f.filename} (+{f.additions}/-{f.deletions}):\n{patch}")
-    if len(pr.files) > 2:
-        files_summary.append(f"...and {len(pr.files) - 2} more files")
+    if len(pr.files) > 3:
+        files_summary.append(f"...and {len(pr.files) - 3} more files")
     files_str = "\n".join(files_summary) if files_summary else "No diffs."
 
     return f"""You are an open-source maintainer triaging PRs for spam/low-effort vs legitimate contributions.
+Answer with compact JSON: at most 3 reasons, each at most 12 words.
 
 FACTS:
 - PR #{pr.number}: "{pr.title}" (generic_title={generic_title})
-- Description ({body_length} chars): "{body_snippet if body_snippet else '[EMPTY]'}"
+- Description ({body_length} chars): "{body_text if body_text else '[EMPTY]'}"
 - Author: {pr.author.login} (assoc={author_assoc}, 7d_prs={author_prs_7d}, merged_in_repo={merged_prs})
 - Branch: {head_branch} (is_fork={is_fork}, similar_open_prs={similar_count})
 - Changes: {pr.stats.changed_files} files, {total_changed_lines} lines (+{pr.stats.additions}/-{pr.stats.deletions}), docs_only={docs_only}, whitespace_only={whitespace_only}, exts={file_extensions}
@@ -108,4 +108,4 @@ EXAMPLES:
 4. First-timer (first_timer, fork, issue #89, 18 lines):
 {{"spam_score": 10, "reasons": ["Addresses linked issue #89 with 18 lines of code and tests", "Specific fix matching \\"Added check for missing Bearer prefix\\"", "First-time contributor from fork making legitimate bugfix"], "suggested_action": "review"}}
 
-Output ONLY a JSON object: {{"spam_score": int, "reasons": ["max 3 strings"], "suggested_action": "close"|"request_changes"|"review"}}. No markdown or preamble."""
+Output ONLY a JSON object: {{"spam_score": int, "reasons": ["at most 3 reasons, each at most 12 words"], "suggested_action": "close"|"request_changes"|"review"}}. No markdown or preamble."""
