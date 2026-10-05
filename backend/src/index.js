@@ -37,6 +37,7 @@ app.get("/health", (req, res) => {
 
 // POST /api/analyze
 app.post("/api/analyze", async (req, res, next) => {
+  const pageStart = Date.now();
   try {
     const { repo, limit } = req.body || {};
 
@@ -67,13 +68,15 @@ app.post("/api/analyze", async (req, res, next) => {
     const responseCacheKey = `${normalizedRepo}#page=${page}#sort=${sort}#limit=${parsedLimit}`;
     const cachedResponse = responseCache.get(responseCacheKey);
     if (cachedResponse) {
+      const pageDuration = Date.now() - pageStart;
+      console.log(`[perf] page=${page} total=${pageDuration}ms prs=${cachedResponse.count || 0}`);
       return res.json(cachedResponse);
     }
 
     // Fetch PRs from GitHub using pagination / sorting params
     const prItems = await fetchRepoPullRequests(normalizedRepo, parsedLimit, page, sort);
 
-    // Parallel AI calls with concurrency 5
+    // Parallel AI calls with AI_CONCURRENCY (default 10)
     const analyzedResults = await analyzePRs(normalizedRepo, prItems);
 
     // Apply sorting before slicing for pagination
@@ -93,10 +96,76 @@ app.post("/api/analyze", async (req, res, next) => {
     // Cache full response for 10 minutes
     responseCache.set(responseCacheKey, responseData);
 
+    const pageDuration = Date.now() - pageStart;
+    console.log(`[perf] page=${page} total=${pageDuration}ms prs=${paginatedResults.length}`);
+
     return res.json(responseData);
   } catch (err) {
     next(err);
   }
+});
+
+// POST /api/prefetch {repo, page, sort}
+app.post("/api/prefetch", (req, res) => {
+  const { repo } = req.body || {};
+  const normalizedRepo = normalizeRepo(repo);
+  if (!normalizedRepo) {
+    return res.status(400).json({
+      error: "Invalid GitHub repo. Paste a link like https://github.com/owner/repo",
+    });
+  }
+
+  const page = Math.max(1, parseInt(req.query.page || req.body?.page || "1", 10) || 1);
+  const pageSize = 10;
+  const rawSort = (req.query.sort || req.body?.sort || "spam_score").toLowerCase();
+  const validSorts = ["spam_score", "created_at_asc", "created_at_desc"];
+  const sort = validSorts.includes(rawSort) ? rawSort : "spam_score";
+
+  // Reply 202 immediately
+  res.status(202).json({
+    status: "accepted",
+    message: "Prefetch started",
+    repo: normalizedRepo,
+    page,
+    sort,
+  });
+
+  // Background task: Never throw from the background task
+  setImmediate(async () => {
+    try {
+      const responseCacheKey = `${normalizedRepo}#page=${page}#sort=${sort}#limit=${pageSize}`;
+      if (responseCache.has(responseCacheKey)) {
+        return;
+      }
+
+      const tStart = Date.now();
+      const prItems = await fetchRepoPullRequests(normalizedRepo, pageSize, page, sort);
+      if (!prItems || prItems.length === 0) {
+        return;
+      }
+
+      // Concurrency of 4 for prefetch
+      const analyzedResults = await analyzePRs(normalizedRepo, prItems, 4);
+      const sortedResults = sortResults(analyzedResults, sort);
+      const paginatedResults = sortedResults.slice(0, pageSize);
+
+      const responseData = {
+        repo: normalizedRepo,
+        analyzedAt: new Date().toISOString(),
+        page,
+        sort,
+        count: paginatedResults.length,
+        results: paginatedResults,
+      };
+
+      responseCache.set(responseCacheKey, responseData);
+
+      const pageDuration = Date.now() - tStart;
+      console.log(`[perf] prefetch page=${page} total=${pageDuration}ms prs=${paginatedResults.length}`);
+    } catch (err) {
+      console.error("[PRobe] Prefetch background error:", err.message);
+    }
+  });
 });
 
 // 404 handler for unknown routes

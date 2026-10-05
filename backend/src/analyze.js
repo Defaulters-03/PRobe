@@ -1,6 +1,5 @@
 import { verdictCache } from "./cache.js";
 import { generateMockVerdict } from "./mockVerdict.js";
-import { hashContext } from "./signals.js";
 
 /**
  * Concurrently processes an array of items with a maximum concurrency limit.
@@ -27,17 +26,23 @@ export async function runWithConcurrency(items, limit, fn) {
   return results;
 }
 
+// In-flight map to de-duplicate concurrent analyses for the same repo+PR
+const inFlightAnalyses = new Map();
+
 /**
- * Analyzes a single PR using trusted shortcut, cache, external AI service, or mock logic.
+ * Internal single PR analysis implementation.
  *
  * @param {string} repo - The normalized repo name (owner/repo)
  * @param {object} item - Object containing { payload, prSummary, headSha, signals }
  * @returns {Promise<{ pr: object, verdict: object | null, signals: object, error?: string, skippedAsTrusted?: boolean }>}
  */
-export async function analyzeSinglePR(repo, item) {
+async function _analyzeSinglePRInternal(repo, item) {
+  const t0 = Date.now();
   const { payload, prSummary, headSha, signals } = item;
 
   if (item.error) {
+    const totalMs = Date.now() - t0;
+    console.log(`[perf] pr=#${payload?.number || prSummary?.number} total=${totalMs}ms source=error`);
     return {
       pr: prSummary,
       verdict: null,
@@ -49,7 +54,7 @@ export async function analyzeSinglePR(repo, item) {
   const context = payload.context || signals;
   const authorAssociation = (context?.author_association || "").toUpperCase();
 
-  // 4. Trusted shortcut: OWNER, MEMBER, COLLABORATOR
+  // Trusted shortcut: OWNER, MEMBER, COLLABORATOR
   if (["OWNER", "MEMBER", "COLLABORATOR"].includes(authorAssociation)) {
     const verdict = {
       label: "legit",
@@ -57,6 +62,8 @@ export async function analyzeSinglePR(repo, item) {
       reasons: [`Author is a repository ${authorAssociation}`],
       suggested_action: "review",
     };
+    const totalMs = Date.now() - t0;
+    console.log(`[perf] pr=#${payload.number} total=${totalMs}ms source=trusted`);
     return {
       pr: prSummary,
       verdict,
@@ -65,12 +72,14 @@ export async function analyzeSinglePR(repo, item) {
     };
   }
 
-  // 8. Cache lookup with short context hash
-  const contextHash = hashContext(context);
-  const cacheKey = `${repo}#${payload.number}#${headSha}#${contextHash}`;
+  // Persistent cache lookup: key repo|number|headSha|PROMPT_VERSION, 60 minutes TTL
+  const PROMPT_VERSION = process.env.PROMPT_VERSION || "1";
+  const cacheKey = `${repo}|${payload.number}|${headSha}|${PROMPT_VERSION}`;
 
   const cachedVerdict = verdictCache.get(cacheKey);
   if (cachedVerdict) {
+    const totalMs = Date.now() - t0;
+    console.log(`[perf] pr=#${payload.number} total=${totalMs}ms source=cache`);
     return {
       pr: prSummary,
       verdict: cachedVerdict,
@@ -80,17 +89,21 @@ export async function analyzeSinglePR(repo, item) {
 
   const useMockAi = (process.env.USE_MOCK_AI || "true").toLowerCase() === "true";
 
-  // 7. Mock AI
+  // Mock AI
   if (useMockAi) {
     try {
       const verdict = generateMockVerdict(payload);
-      verdictCache.set(cacheKey, verdict);
+      verdictCache.set(cacheKey, verdict, 60 * 60 * 1000);
+      const totalMs = Date.now() - t0;
+      console.log(`[perf] pr=#${payload.number} total=${totalMs}ms source=mock`);
       return {
         pr: prSummary,
         verdict,
         signals,
       };
     } catch (err) {
+      const totalMs = Date.now() - t0;
+      console.log(`[perf] pr=#${payload.number} total=${totalMs}ms source=error`);
       return {
         pr: prSummary,
         verdict: null,
@@ -100,7 +113,7 @@ export async function analyzeSinglePR(repo, item) {
     }
   }
 
-  // 5. Call external AI service
+  // External AI service
   const baseUrl = (process.env.AI_SERVICE_URL || "http://localhost:8000").replace(/\/+$/, "");
   const analyzeUrl = `${baseUrl}/analyze`;
 
@@ -127,7 +140,10 @@ export async function analyzeSinglePR(repo, item) {
       suggested_action: data.suggested_action,
     };
 
-    verdictCache.set(cacheKey, verdict);
+    verdictCache.set(cacheKey, verdict, 60 * 60 * 1000);
+
+    const totalMs = Date.now() - t0;
+    console.log(`[perf] pr=#${payload.number} total=${totalMs}ms source=ai`);
 
     return {
       pr: prSummary,
@@ -135,6 +151,8 @@ export async function analyzeSinglePR(repo, item) {
       signals,
     };
   } catch (err) {
+    const totalMs = Date.now() - t0;
+    console.log(`[perf] pr=#${payload.number} total=${totalMs}ms source=error`);
     return {
       pr: prSummary,
       verdict: null,
@@ -145,16 +163,47 @@ export async function analyzeSinglePR(repo, item) {
 }
 
 /**
- * Analyzes multiple PRs with a maximum concurrency of 5.
+ * Analyzes a single PR using de-duplication: if the same repo+PR analysis is already running,
+ * returns the existing promise.
+ *
+ * @param {string} repo - The normalized repo name (owner/repo)
+ * @param {object} item - Object containing { payload, prSummary, headSha, signals }
+ * @returns {Promise<{ pr: object, verdict: object | null, signals: object, error?: string, skippedAsTrusted?: boolean }>}
+ */
+export function analyzeSinglePR(repo, item) {
+  const prNumber = item?.payload?.number || item?.prSummary?.number;
+  const inFlightKey = `${repo}|${prNumber}`;
+
+  if (inFlightAnalyses.has(inFlightKey)) {
+    return inFlightAnalyses.get(inFlightKey);
+  }
+
+  const promise = (async () => {
+    try {
+      return await _analyzeSinglePRInternal(repo, item);
+    } finally {
+      inFlightAnalyses.delete(inFlightKey);
+    }
+  })();
+
+  inFlightAnalyses.set(inFlightKey, promise);
+  return promise;
+}
+
+/**
+ * Analyzes multiple PRs with configurable concurrency (defaults to AI_CONCURRENCY or 10).
  * Logs how many AI calls were skipped as trusted.
  *
  * @param {string} repo - The normalized repo name (owner/repo)
  * @param {Array<{ payload: object, prSummary: object, headSha: string, signals: object }>>} prItems
+ * @param {number} [concurrency] - Optional custom concurrency limit
  * @returns {Promise<Array<{ pr: object, verdict: object | null, signals: object, error?: string }>>}
  */
-export async function analyzePRs(repo, prItems) {
-  // Raise parallel AI calls from 3 to 5
-  const rawResults = await runWithConcurrency(prItems, 5, async (item) => {
+export async function analyzePRs(repo, prItems, concurrency) {
+  const AI_CONCURRENCY = parseInt(process.env.AI_CONCURRENCY || "10", 10) || 10;
+  const limit = typeof concurrency === "number" ? concurrency : AI_CONCURRENCY;
+
+  const rawResults = await runWithConcurrency(prItems, limit, async (item) => {
     return analyzeSinglePR(repo, item);
   });
 
