@@ -1,0 +1,134 @@
+/* PRobe Extension - Content Script Styles */
+
+/* Panel container */
+#pr0be-extension-container {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling for the panel */
+#pr0be-extension-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+#pr0be-extension-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#pr0be-extension-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+#pr0be-extension-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Focus styles for accessibility */
+#pr0be-extension-container button:focus-visible,
+#pr0be-extension-container a:focus-visible {
+  outline: 2px solid #c8f135;
+  outline-offset: 2px;
+}
+
+/* Results container scrollbar */
+#pr0be-results::-webkit-scrollbar {
+  width: 4px;
+}
+
+#pr0be-results::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#pr0be-results::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+#pr0be-results::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Loading spinner animation */
+#pr0be-loading svg {
+  animation: pr0be-spin 1s linear infinite;
+}
+
+@keyframes pr0be-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Smooth slide transition */
+#pr0be-extension-container {
+  transition: right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* PR item hover effect */
+#pr0be-results > div:hover {
+  background-color: #13171f;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Score bar animation */
+#pr0be-results .score-bar-fill {
+  animation: pr0be-fill 0.5s ease-out forwards;
+}
+
+@keyframes pr0be-fill {
+  from {
+    width: 0%;
+  }
+  to {
+    width: var(--score-width);
+  }
+}
+
+/* Error container shake animation */
+#pr0be-error {
+  animation: pr0be-shake 0.4s ease-in-out;
+}
+
+@keyframes pr0be-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  #pr0be-extension-container,
+  #pr0be-loading svg,
+  #pr0be-results .score-bar-fill,
+  #pr0be-error {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Ensure panel doesn't interfere with GitHub's UI */
+#pr0be-extension-container * {
+  box-sizing: border-box;
+}
+
+/* Prevent text selection on header elements */
+#pr0be-extension-container header * {
+  user-select: none;
+}
+
+/* Links in results */
+#pr0be-results a {
+  color: #c8f135;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+#pr0be-results a:hover {
+  color: #e6e6e6;
+  text-decoration: underline;
+}

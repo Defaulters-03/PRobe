@@ -19,10 +19,10 @@ if (!process.env.GITHUB_TOKEN?.trim()) {
   console.warn("⚠️ Warning: GITHUB_TOKEN is not set. GitHub API rate limits will be restricted.");
 }
 
-// Enable CORS for FRONTEND_ORIGIN
+// Enable CORS for FRONTEND_ORIGIN and chrome extension origins
 app.use(
   cors({
-    origin: FRONTEND_ORIGIN,
+    origin: [FRONTEND_ORIGIN, "chrome-extension://*"],
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
