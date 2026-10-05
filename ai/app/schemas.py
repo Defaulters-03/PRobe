@@ -1,8 +1,9 @@
-from typing import List, Optional, Literal
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AuthorSchema(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     login: str
     account_created_at: str
     public_repos: int = 0
@@ -10,12 +11,14 @@ class AuthorSchema(BaseModel):
 
 
 class StatsSchema(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     changed_files: int = 0
     additions: int = 0
     deletions: int = 0
 
 
 class FileSchema(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     filename: str
     status: str = "modified"
     additions: int = 0
@@ -24,6 +27,7 @@ class FileSchema(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     number: int
     title: str
     body: Optional[str] = ""
@@ -32,6 +36,7 @@ class AnalyzeRequest(BaseModel):
     author: AuthorSchema
     stats: StatsSchema
     files: List[FileSchema] = []
+    context: Optional[Dict[str, Any]] = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -42,6 +47,7 @@ class AnalyzeResponse(BaseModel):
 
 
 class GemmaRawOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     spam_score: int = Field(..., ge=0, le=100)
     reasons: List[str] = []
     suggested_action: Optional[str] = None
