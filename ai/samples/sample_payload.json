@@ -86,5 +86,59 @@
         "patch": "@@ -180,0 +181,24 @@\n+def test_connection_pool_leak_on_exception():\n+    pool = ConnectionPool(max_size=5)\n+    with pytest.raises(TaskFailedError):\n+        pool.run(failing_task)\n+    assert pool.available_connections() == 5\n"
       }
     ]
+  },
+  "first_timer_legit": {
+    "number": 104,
+    "title": "fix: prevent memory leak in cache store (#105)",
+    "body": "Fixes #105. Under high write load, entries were not evicted properly. Cleared stale references and added regression tests.",
+    "url": "https://github.com/prsift/example-repo/pull/104",
+    "created_at": "2026-10-05T10:00:00Z",
+    "author": {
+      "login": "first-time-dev",
+      "account_created_at": "2026-09-01T12:00:00Z",
+      "public_repos": 4,
+      "followers": 2
+    },
+    "stats": {
+      "changed_files": 2,
+      "additions": 22,
+      "deletions": 3
+    },
+    "files": [
+      {
+        "filename": "src/cache/store.py",
+        "status": "modified",
+        "additions": 12,
+        "deletions": 3,
+        "patch": "@@ -45,3 +45,12 @@\n-        del self._data[key]\n+        entry = self._data.pop(key, None)\n+        if entry:\n+            entry.cleanup()\n"
+      },
+      {
+        "filename": "tests/test_cache.py",
+        "status": "modified",
+        "additions": 10,
+        "deletions": 0,
+        "patch": "@@ -80,0 +81,10 @@\n+def test_cache_eviction_cleanup():\n+    cache = CacheStore()\n+    cache.set('k', 'v')\n+    cache.evict('k')\n+    assert len(cache._data) == 0\n"
+      }
+    ],
+    "context": {
+      "author_association": "FIRST_TIME_CONTRIBUTOR",
+      "draft": false,
+      "head_branch": "fix-cache-leak",
+      "is_fork": true,
+      "commits": 1,
+      "comments": 0,
+      "body_length": 120,
+      "unchecked_checklist_items": 0,
+      "linked_issues": ["#105"],
+      "generic_title": false,
+      "generic_branch": false,
+      "whitespace_only": false,
+      "docs_only": false,
+      "file_extensions": [".py"],
+      "similar_open_prs": [],
+      "total_changed_lines": 25,
+      "author_prs_last_7d": 1,
+      "author_merged_prs_in_repo": 0
+    }
   }
 }

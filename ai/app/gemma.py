@@ -6,6 +6,7 @@ import re
 from typing import Optional
 
 from google import genai
+from google.genai import types
 from app.heuristics import (
     compute_label,
     derive_suggested_action,
@@ -51,13 +52,15 @@ async def execute_model_call(
     prompt: str,
     timeout: float = 30.0,
 ) -> str:
-    """Execute generate_content in a thread pool with a strict 30s timeout."""
+    """Execute generate_content in a thread pool with temperature=0.1 and strict 30s timeout."""
     loop = asyncio.get_running_loop()
 
     def _call() -> str:
+        config = types.GenerateContentConfig(temperature=0.1)
         response = client.models.generate_content(
             model=model,
             contents=prompt,
+            config=config,
         )
         return response.text or ""
 
@@ -97,8 +100,20 @@ async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
             )
             raw_output = parse_model_response(raw_text)
 
-            # Compute label in code from spam_score (do NOT trust model's label)
+            # Raw spam score bounded 0-100
             spam_score = max(0, min(100, int(round(raw_output.spam_score))))
+
+            # If context.author_merged_prs_in_repo >= 1, subtract 20 from spam_score in code after parsing (floor 0)
+            if pr.context:
+                merged_prs = pr.context.get("author_merged_prs_in_repo")
+                if merged_prs is not None:
+                    try:
+                        if int(merged_prs) >= 1:
+                            spam_score = max(0, spam_score - 20)
+                    except (ValueError, TypeError):
+                        pass
+
+            # Compute label in code from spam_score (do NOT trust model's label)
             label = compute_label(spam_score)
 
             # Derive suggested_action from label if missing or invalid

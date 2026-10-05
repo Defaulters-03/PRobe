@@ -5,11 +5,11 @@
 # 1. Health check:
 #    Invoke-RestMethod -Uri "http://localhost:8000/health" -Method Get
 #
-# 2. Test All 3 Samples (obvious_spam, borderline, legit):
-#    $samples = (Get-Content .\samples\sample_payload.json | ConvertFrom-Json); @('obvious_spam', 'borderline', 'legit') | ForEach-Object { Write-Host "`n=== Testing $_ ===" -ForegroundColor Cyan; Invoke-RestMethod -Uri "http://localhost:8000/analyze" -Method Post -ContentType "application/json" -Body ($samples.$_ | ConvertTo-Json -Depth 10) }
+# 2. Test All Samples (obvious_spam, borderline, legit, first_timer_legit):
+#    $samples = (Get-Content .\samples\sample_payload.json | ConvertFrom-Json); @('obvious_spam', 'borderline', 'legit', 'first_timer_legit') | ForEach-Object { Write-Host "`n=== Testing $_ ===" -ForegroundColor Cyan; Invoke-RestMethod -Uri "http://localhost:8000/analyze" -Method Post -ContentType "application/json" -Body ($samples.$_ | ConvertTo-Json -Depth 10) }
 #
-# 3. Test Single Sample (e.g. obvious_spam):
-#    Invoke-RestMethod -Uri "http://localhost:8000/analyze" -Method Post -ContentType "application/json" -Body ((Get-Content .\samples\sample_payload.json | ConvertFrom-Json).obvious_spam | ConvertTo-Json -Depth 10)
+# 3. Test Single Sample (e.g. obvious_spam or first_timer_legit):
+#    Invoke-RestMethod -Uri "http://localhost:8000/analyze" -Method Post -ContentType "application/json" -Body ((Get-Content .\samples\sample_payload.json | ConvertFrom-Json).first_timer_legit | ConvertTo-Json -Depth 10)
 # ==============================================================================
 
 from contextlib import asynccontextmanager
