@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Image from "next/image";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "next/navigation";
 import {
@@ -23,6 +24,9 @@ import {
 import { parseRepoInput } from "@/lib/parseRepoInput";
 import { analyzeRepo } from "@/lib/api";
 import type { AnalyzeResponse, AnalysisResult } from "@/lib/types";
+import { INTERACTIVE_DOTS } from "@/lib/background-config";
+import { InteractiveDots } from "@/components/interactive-dots";
+import logo from "@/images/PRlogo.png";
 
 const EXAMPLE_REPOS = [
   "expressjs/express",
@@ -1785,12 +1789,19 @@ function PRobeApp() {
   ];
 
   return (
-    <div className="relative min-h-screen bg-[#0A0A0B] text-[#EDEDEF] selection:bg-[#C8F135]/20 selection:text-[#C8F135]">
-      {/* Textured Dither Dot Pattern Background fading toward edges */}
-      <div
-        className="pointer-events-none fixed inset-0 dither-pattern z-0"
-        aria-hidden="true"
-      />
+    <div
+      className="relative min-h-screen bg-[#0A0A0B] text-[#EDEDEF] selection:bg-[#C8F135]/20 selection:text-[#C8F135]"
+      data-interactive-dots={INTERACTIVE_DOTS ? "true" : "false"}
+    >
+      {/* Background: Interactive Canvas or Static Dither Dot Pattern */}
+      {INTERACTIVE_DOTS ? (
+        <InteractiveDots />
+      ) : (
+        <div
+          className="pointer-events-none fixed inset-0 dither-pattern z-0"
+          aria-hidden="true"
+        />
+      )}
 
       <CommandPalette
         isOpen={commandOpen}
@@ -1809,15 +1820,26 @@ function PRobeApp() {
               : "h-14 sm:h-[72px] sm:w-[540px] sm:min-w-[520px] px-4 sm:px-7 gap-4 sm:gap-14 border-white/10 shadow-sm"
           }`}
         >
-          {/* Left: PRobe logo + status dot + triage tag */}
-          <div className="flex items-center gap-3 sm:gap-4 shrink-0">
-            <span className="size-2.5 rounded-full bg-[#C8F135] shadow-[0_0_10px_#C8F135] shrink-0" />
-            <span className="font-semibold text-[20px] sm:text-[22px] tracking-tight text-[#EDEDEF]">
-              PRobe
-            </span>
-            <span className="text-[13px] font-mono text-[#6B7280] hidden sm:inline border-l border-white/10 pl-4">
-              triage
-            </span>
+          {/* Left: PRobe logo + wordmark + triage tag */}
+          <div className="flex items-center gap-3.5 shrink-0">
+            <Image
+              src={logo}
+              alt="PRobe logo"
+              width={96}
+              height={96}
+              priority
+              className={`object-contain rounded-full shrink-0 transition-transform duration-150 hover:scale-105 motion-reduce:hover:scale-100 motion-reduce:transition-none ${
+                isScrolled ? "size-9 sm:size-10" : "size-9 sm:size-12"
+              }`}
+            />
+            <div className="flex items-center gap-4">
+              <span className="font-semibold text-[21px] sm:text-[24px] tracking-tight text-[#EDEDEF]">
+                PRobe
+              </span>
+              <span className="text-[13px] font-mono text-[#6B7280] hidden sm:inline border-l border-white/10 pl-4">
+                triage
+              </span>
+            </div>
           </div>
 
           {/* Right: macOS-style magnifying dock */}
