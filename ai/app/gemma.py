@@ -99,7 +99,11 @@ async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
         fallback = run_heuristic_triage(pr, f"Failed to initialize GenAI client: {e}")
         return _finish(fallback, "fallback")
 
-    prompt = build_pr_analysis_prompt(pr)
+    try:
+        prompt = build_pr_analysis_prompt(pr)
+    except Exception as e:
+        fallback = run_heuristic_triage(pr, f"Failed to build prompt: {e}")
+        return _finish(fallback, "fallback")
 
     config = types.GenerateContentConfig(
         temperature=0.1,
@@ -152,12 +156,16 @@ async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
                 suggested_action=raw_output.suggested_action,
             )
 
-            # Clean and cap reasons to max 3 short strings
-            reasons = [
-                str(r).strip()
-                for r in raw_output.reasons
-                if str(r).strip()
-            ][:3]
+            # Clean and cap reasons to max 3 short strings of at most 12 words
+            clean_reasons = []
+            for r in raw_output.reasons:
+                text = str(r).strip()
+                if text:
+                    words = text.split()
+                    if len(words) > 12:
+                        text = " ".join(words[:12])
+                    clean_reasons.append(text)
+            reasons = clean_reasons[:3]
 
             if not reasons:
                 reasons = [f"PR evaluated with spam score {spam_score}/100"]
