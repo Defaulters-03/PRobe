@@ -36,6 +36,9 @@ export interface AnalyzeResponse {
   analyzedAt: string;
   count: number;
   results: AnalysisResult[];
+  page?: number;
+  totalPages?: number;
+  total?: number;
 }
 
 export interface ApiError {

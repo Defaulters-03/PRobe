@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "next/navigation";
 import {
   ExternalLink,
@@ -17,6 +18,7 @@ import {
   X,
   Activity,
   Check,
+  Command,
 } from "lucide-react";
 import { parseRepoInput } from "@/lib/parseRepoInput";
 import { analyzeRepo } from "@/lib/api";
@@ -61,6 +63,14 @@ function AnimatedNumber({ value }: { value: number }) {
     if (start === end) {
       setDisplayValue(end);
       return;
+    }
+
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      const frame = requestAnimationFrame(() => setDisplayValue(end));
+      return () => cancelAnimationFrame(frame);
     }
 
     const duration = 500;
@@ -192,7 +202,7 @@ function RowScore({
       : "#2DD4BF";
 
   return (
-    <div className="relative group/score w-[200px] flex items-center justify-between gap-3 cursor-help">
+    <div className="relative group/score w-[200px] flex items-center justify-between gap-3 cursor-default">
       <div className="w-[120px] h-[5px] rounded-full bg-[#1A2027] overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500 ease-out"
@@ -224,25 +234,37 @@ function RowScore({
   );
 }
 
+interface SegmentedBarProps {
+  spam: number;
+  lowEffort: number;
+  legit: number;
+  unanalyzed: number;
+  total: number;
+  hoveredStatus: "spam" | "low_effort" | "legit" | "unanalyzed" | null;
+  onHoverStatus: (
+    status: "spam" | "low_effort" | "legit" | "unanalyzed" | null
+  ) => void;
+  onSelectStatus: (
+    status: "spam" | "low_effort" | "legit" | "unanalyzed"
+  ) => void;
+}
+
 function SegmentedBar({
   spam,
   lowEffort,
   legit,
   unanalyzed,
   total,
-}: {
-  spam: number;
-  lowEffort: number;
-  legit: number;
-  unanalyzed: number;
-  total: number;
-}) {
+  hoveredStatus,
+  onHoverStatus,
+  onSelectStatus,
+}: SegmentedBarProps) {
   const [animated, setAnimated] = React.useState(false);
 
   React.useEffect(() => {
     const timer = setTimeout(() => {
       setAnimated(true);
-    }, 50);
+    }, 60);
     return () => clearTimeout(timer);
   }, [total]);
 
@@ -250,68 +272,485 @@ function SegmentedBar({
     return (
       <div
         aria-label="No pull requests analyzed"
-        className="h-2 w-full rounded-full bg-[#1A2027]"
+        className="h-3 w-full rounded-full border border-dashed border-white/20 bg-white/[0.02]"
       />
     );
   }
 
+  const segments = [
+    {
+      id: "spam" as const,
+      label: "Spam",
+      count: spam,
+      color: "#FF5A4F",
+      glowColor: "rgba(255, 90, 79, 0.45)",
+      delay: "0ms",
+    },
+    {
+      id: "low_effort" as const,
+      label: "Low effort",
+      count: lowEffort,
+      color: "#FFB224",
+      glowColor: "rgba(255, 178, 36, 0.45)",
+      delay: "80ms",
+    },
+    {
+      id: "legit" as const,
+      label: "Legit",
+      count: legit,
+      color: "#2DD4BF",
+      glowColor: "rgba(45, 212, 191, 0.45)",
+      delay: "160ms",
+    },
+    {
+      id: "unanalyzed" as const,
+      label: "Unanalyzed",
+      count: unanalyzed,
+      color: "#6B7280",
+      glowColor: "rgba(107, 114, 128, 0.45)",
+      delay: "240ms",
+    },
+  ];
+
   return (
-    <div className="relative h-2 w-full rounded-full bg-[#1A2027] flex gap-[3px]">
-      {spam > 0 && (
-        <div
-          role="progressbar"
-          aria-label={`Spam: ${spam}`}
-          style={{
-            width: animated ? `${(spam / total) * 100}%` : "0%",
-          }}
-          className="group/seg relative h-full bg-[#FF5A4F] rounded-full transition-all duration-700 ease-out cursor-help"
-        >
-          <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/seg:flex items-center px-2.5 py-1 rounded border border-white/10 bg-[#161B22] text-[11px] font-mono text-[#EDEDEF] shadow-xl z-20 whitespace-nowrap">
-            Spam: {spam}
+    <div className="relative h-4 w-full rounded-full bg-[#1A2027]/70 flex items-center gap-[3px] p-[2px]">
+      {segments.map((seg) => {
+        if (seg.count <= 0) return null;
+        const widthPct = (seg.count / total) * 100;
+        const isHovered = hoveredStatus === seg.id;
+        const isDimmed = hoveredStatus !== null && !isHovered;
+
+        return (
+          <button
+            key={seg.id}
+            type="button"
+            role="button"
+            aria-label={`${seg.label}: ${seg.count}`}
+            onClick={() => onSelectStatus(seg.id)}
+            onMouseEnter={() => onHoverStatus(seg.id)}
+            onMouseLeave={() => onHoverStatus(null)}
+            onFocus={() => onHoverStatus(seg.id)}
+            onBlur={() => onHoverStatus(null)}
+            style={{
+              width: animated ? `${widthPct}%` : "0%",
+              backgroundColor: seg.color,
+              transitionDelay: animated ? "0ms" : seg.delay,
+              boxShadow: isHovered ? `0 0 14px ${seg.glowColor}` : "none",
+            }}
+            className={`group/seg relative rounded-full transition-all duration-300 ease-out cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-white/40 ${
+              isHovered
+                ? "h-4 z-10 scale-y-110"
+                : isDimmed
+                ? "h-3 opacity-40"
+                : "h-3 opacity-100"
+            }`}
+          >
+            <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/seg:flex items-center px-2.5 py-1 rounded border border-white/10 bg-[#161B22] text-[11px] font-mono text-[#EDEDEF] shadow-xl z-30 whitespace-nowrap">
+              {seg.label}: {seg.count}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+interface AnalyzedCardProps {
+  data: AnalyzeResponse | null;
+  isLoading: boolean;
+  stats: {
+    analyzed: number;
+    spam: number;
+    lowEffort: number;
+    legit: number;
+  };
+  unanalyzedCount: number;
+  normalizedRepo: string;
+  activeTab: string;
+  onTabChange: (tab: string) => void;
+  onSelectHighest: () => void;
+  onReviewSpam: () => void;
+  lastAnalyzedAt: number | null;
+  highestPR: AnalysisResult | null;
+  highestScore: number;
+  avgSpamScore: number;
+  spamRate: number;
+}
+
+function AnalyzedCard({
+  data,
+  isLoading,
+  stats,
+  unanalyzedCount,
+  normalizedRepo,
+  activeTab,
+  onTabChange,
+  onSelectHighest,
+  onReviewSpam,
+  lastAnalyzedAt,
+  highestPR,
+  highestScore,
+  avgSpamScore,
+  spamRate,
+}: AnalyzedCardProps) {
+  const [hoveredStatus, setHoveredStatus] = React.useState<
+    "spam" | "low_effort" | "legit" | "unanalyzed" | null
+  >(null);
+
+  const [relativeTime, setRelativeTime] = React.useState("Analyzed just now");
+
+  React.useEffect(() => {
+    if (!lastAnalyzedAt) return;
+
+    const compute = () => {
+      const diffSec = Math.max(
+        0,
+        Math.floor((Date.now() - lastAnalyzedAt) / 1000)
+      );
+      if (diffSec < 45) {
+        setRelativeTime("Analyzed just now");
+      } else if (diffSec < 3600) {
+        setRelativeTime(`Analyzed ${Math.floor(diffSec / 60)}m ago`);
+      } else {
+        setRelativeTime(`Analyzed ${Math.floor(diffSec / 3600)}h ago`);
+      }
+    };
+
+    const frame = requestAnimationFrame(compute);
+    const timer = setInterval(compute, 10000);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearInterval(timer);
+    };
+  }, [lastAnalyzedAt]);
+
+  const handleSpotlight = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    e.currentTarget.style.setProperty("--mouse-x", `${x}px`);
+    e.currentTarget.style.setProperty("--mouse-y", `${y}px`);
+  };
+
+  const spotlightTint =
+    hoveredStatus === "spam"
+      ? "rgba(255, 90, 79, 0.08)"
+      : hoveredStatus === "low_effort"
+      ? "rgba(255, 178, 36, 0.08)"
+      : hoveredStatus === "legit"
+      ? "rgba(45, 212, 191, 0.08)"
+      : hoveredStatus === "unanalyzed"
+      ? "rgba(107, 114, 128, 0.08)"
+      : "rgba(255, 255, 255, 0.04)";
+
+  const percentages = React.useMemo(() => {
+    const total = stats.analyzed;
+    if (total === 0) {
+      return { spam: 0, lowEffort: 0, legit: 0, unanalyzed: 0 };
+    }
+    const pSpam = Math.round((stats.spam / total) * 100);
+    const pLow = Math.round((stats.lowEffort / total) * 100);
+    const pLegit = Math.round((stats.legit / total) * 100);
+    let pUn = 100 - pSpam - pLow - pLegit;
+    if (pUn < 0) pUn = 0;
+    return {
+      spam: pSpam,
+      lowEffort: pLow,
+      legit: pLegit,
+      unanalyzed: pUn,
+    };
+  }, [stats.analyzed, stats.spam, stats.lowEffort, stats.legit]);
+
+  const legendChips = [
+    {
+      id: "spam" as const,
+      label: "Spam",
+      count: stats.spam,
+      pct: percentages.spam,
+      color: "#FF5A4F",
+      activeBorder: "border-[#FF5A4F]/60 bg-[#FF5A4F]/10 text-[#FF5A4F]",
+    },
+    {
+      id: "low_effort" as const,
+      label: "Low effort",
+      count: stats.lowEffort,
+      pct: percentages.lowEffort,
+      color: "#FFB224",
+      activeBorder: "border-[#FFB224]/60 bg-[#FFB224]/10 text-[#FFB224]",
+    },
+    {
+      id: "legit" as const,
+      label: "Legit",
+      count: stats.legit,
+      pct: percentages.legit,
+      color: "#2DD4BF",
+      activeBorder: "border-[#2DD4BF]/60 bg-[#2DD4BF]/10 text-[#2DD4BF]",
+    },
+    {
+      id: "unanalyzed" as const,
+      label: "Unanalyzed",
+      count: unanalyzedCount,
+      pct: percentages.unanalyzed,
+      color: "#6B7280",
+      activeBorder: "border-[#6B7280]/60 bg-[#6B7280]/10 text-[#6B7280]",
+    },
+  ];
+
+  return (
+    <div
+      onMouseMove={handleSpotlight}
+      className="group relative rounded-2xl border border-white/[0.08] bg-[#11141A] p-6 sm:p-8 transition-colors duration-200 select-none flex flex-col gap-6 overflow-hidden"
+    >
+      {/* Cursor-following spotlight tinted to hovered segment */}
+      <div
+        className="pointer-events-none absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+        style={{
+          background: `radial-gradient(340px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), ${spotlightTint}, transparent 80%)`,
+          transition: "background 200ms ease, opacity 300ms ease",
+        }}
+        aria-hidden="true"
+      />
+
+      {/* Loading Skeleton State */}
+      {isLoading && !data ? (
+        <div className="space-y-6 animate-pulse">
+          <div className="flex items-center justify-between">
+            <div className="h-6 w-28 rounded-md bg-white/[0.06]" />
+            <div className="h-6 w-44 rounded-md bg-white/[0.06]" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-14 w-48 rounded-lg bg-white/[0.06]" />
+            <div className="h-4 w-72 rounded bg-white/[0.06]" />
+          </div>
+          <div className="h-3 w-full rounded-full bg-white/[0.06]" />
+          <div className="flex flex-wrap gap-2">
+            <div className="h-8 w-28 rounded-full bg-white/[0.06]" />
+            <div className="h-8 w-36 rounded-full bg-white/[0.06]" />
+            <div className="h-8 w-28 rounded-full bg-white/[0.06]" />
+            <div className="h-8 w-36 rounded-full bg-white/[0.06]" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="h-20 rounded-xl bg-white/[0.06]" />
+            <div className="h-20 rounded-xl bg-white/[0.06]" />
+            <div className="h-20 rounded-xl bg-white/[0.06]" />
           </div>
         </div>
-      )}
-      {lowEffort > 0 && (
-        <div
-          role="progressbar"
-          aria-label={`Low effort: ${lowEffort}`}
-          style={{
-            width: animated ? `${(lowEffort / total) * 100}%` : "0%",
-          }}
-          className="group/seg relative h-full bg-[#FFB224] rounded-full transition-all duration-700 ease-out cursor-help"
-        >
-          <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/seg:flex items-center px-2.5 py-1 rounded border border-white/10 bg-[#161B22] text-[11px] font-mono text-[#EDEDEF] shadow-xl z-20 whitespace-nowrap">
-            Low effort: {lowEffort}
+      ) : !data ? (
+        /* Empty / Zero State */
+        <div className="flex flex-col items-center justify-center text-center py-6 space-y-4">
+          <div className="size-10 rounded-full border border-white/10 bg-white/[0.04] flex items-center justify-center text-[#8B95A5]">
+            <Activity className="size-5 text-[#8B95A5]" />
           </div>
-        </div>
-      )}
-      {legit > 0 && (
-        <div
-          role="progressbar"
-          aria-label={`Legit: ${legit}`}
-          style={{
-            width: animated ? `${(legit / total) * 100}%` : "0%",
-          }}
-          className="group/seg relative h-full bg-[#2DD4BF] rounded-full transition-all duration-700 ease-out cursor-help"
-        >
-          <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/seg:flex items-center px-2.5 py-1 rounded border border-white/10 bg-[#161B22] text-[11px] font-mono text-[#EDEDEF] shadow-xl z-20 whitespace-nowrap">
-            Legit: {legit}
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-[#EDEDEF]">
+              Enter a repo above to analyze its PRs
+            </p>
+            <p className="text-xs text-[#8B95A5] font-mono">
+              Scores, spam breakdown, and triage insights will appear here
+            </p>
           </div>
+          <div className="w-full max-w-md h-3 rounded-full border border-dashed border-white/20 bg-white/[0.02]" />
         </div>
-      )}
-      {unanalyzed > 0 && (
-        <div
-          role="progressbar"
-          aria-label={`Unanalyzed: ${unanalyzed}`}
-          style={{
-            width: animated ? `${(unanalyzed / total) * 100}%` : "0%",
-          }}
-          className="group/seg relative h-full bg-[#6B7280] rounded-full transition-all duration-700 ease-out cursor-help"
-        >
-          <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/seg:flex items-center px-2.5 py-1 rounded border border-white/10 bg-[#161B22] text-[11px] font-mono text-[#EDEDEF] shadow-xl z-20 whitespace-nowrap">
-            Unanalyzed: {unanalyzed}
+      ) : (
+        <>
+          {/* a) Header row */}
+          <div className="flex flex-wrap items-center justify-between gap-3 relative z-10">
+            <div className="flex items-center gap-2">
+              <div className="size-6 rounded-md border border-white/10 bg-white/[0.04] flex items-center justify-center text-[#8B95A5]">
+                <Activity className="size-3.5" />
+              </div>
+              <span className="text-xs font-mono uppercase tracking-wider text-[#8B95A5]">
+                Analyzed
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2.5">
+              <span className="px-2.5 py-0.5 rounded border border-white/10 bg-white/[0.03] text-[11px] sm:text-xs font-mono text-[#EDEDEF] max-w-[200px] truncate">
+                {normalizedRepo}
+              </span>
+              <span className="text-[11px] sm:text-xs font-mono text-[#8B95A5]">
+                {relativeTime}
+              </span>
+            </div>
           </div>
-        </div>
+
+          {/* b) Headline stat block */}
+          <div className="space-y-2 text-left relative z-10">
+            <div className="flex items-baseline gap-3">
+              <span className="text-[44px] sm:text-[56px] leading-none font-semibold tabular-nums text-[#EDEDEF]">
+                <AnimatedNumber value={stats.analyzed} />
+              </span>
+              <span className="text-sm font-mono text-[#8B95A5]">
+                PRs analyzed
+              </span>
+            </div>
+
+            {/* One insight sentence below, computed from the data */}
+            <p className="text-xs sm:text-sm font-mono truncate animate-fade-rise">
+              {stats.spam > 0 ? (
+                <>
+                  <span className="text-[#FF5A4F] font-semibold">
+                    {stats.spam}
+                  </span>{" "}
+                  of {stats.analyzed} PRs look like{" "}
+                  <span className="text-[#FF5A4F] font-semibold">spam</span> (
+                  {Math.round((stats.spam / stats.analyzed) * 100)}%)
+                </>
+              ) : stats.analyzed > 0 ? (
+                <span className="text-[#2DD4BF] font-medium">
+                  No spam detected. Nice and clean.
+                </span>
+              ) : (
+                <span className="text-[#8B95A5]">
+                  Awaiting repository analysis
+                </span>
+              )}
+            </p>
+          </div>
+
+          {/* c) Segmented bar */}
+          <div className="w-full relative z-10">
+            <SegmentedBar
+              spam={stats.spam}
+              lowEffort={stats.lowEffort}
+              legit={stats.legit}
+              unanalyzed={unanalyzedCount}
+              total={stats.analyzed}
+              hoveredStatus={hoveredStatus}
+              onHoverStatus={setHoveredStatus}
+              onSelectStatus={(status) => {
+                onTabChange(activeTab === status ? "all" : status);
+              }}
+            />
+          </div>
+
+          {/* d) Legend chips */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 relative z-10">
+            {legendChips.map((chip) => {
+              const isActive = activeTab === chip.id;
+              const isHighlighted = hoveredStatus === chip.id;
+              const isDimmed = hoveredStatus !== null && !isHighlighted;
+              const isDisabled = chip.count === 0;
+
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  disabled={isDisabled}
+                  aria-pressed={isActive}
+                  aria-label={`Filter ${chip.label}, ${chip.count} PRs, ${chip.pct}%`}
+                  onMouseEnter={() => setHoveredStatus(chip.id)}
+                  onMouseLeave={() => setHoveredStatus(null)}
+                  onFocus={() => setHoveredStatus(chip.id)}
+                  onBlur={() => setHoveredStatus(null)}
+                  onClick={() => {
+                    if (isDisabled) return;
+                    onTabChange(activeTab === chip.id ? "all" : chip.id);
+                  }}
+                  className={`px-3 py-1.5 rounded-full border text-xs sm:text-[13px] font-mono tabular-nums flex items-center gap-2 transition-all outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135] select-none ${
+                    isDisabled
+                      ? "opacity-40 cursor-not-allowed border-white/5 bg-white/[0.01] text-[#6B7280]"
+                      : isActive
+                      ? `${chip.activeBorder} shadow-sm font-semibold cursor-pointer`
+                      : isHighlighted
+                      ? "border-white/30 bg-white/[0.08] text-white shadow-sm cursor-pointer"
+                      : isDimmed
+                      ? "opacity-50 border-white/10 bg-[#161B22]/60 text-[#9CA3AF] cursor-pointer"
+                      : "border-white/10 bg-[#161B22]/80 text-[#9CA3AF] hover:text-[#EDEDEF] hover:border-white/20 hover:bg-[#161B22] cursor-pointer"
+                  }`}
+                >
+                  <span
+                    className="size-2 rounded-full shrink-0"
+                    style={{ backgroundColor: chip.color }}
+                  />
+                  <span>{chip.label}</span>
+                  <span className="font-semibold text-[#EDEDEF]">
+                    {chip.count}
+                  </span>
+                  <span className="text-[#6B7280]">·</span>
+                  <span className="text-[#8B95A5]">{chip.pct}%</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* e) Mini stats row */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1 relative z-10">
+            {/* 1. Spam rate */}
+            <div className="rounded-xl border border-white/10 bg-[#0E1116] p-4 flex flex-col justify-between gap-1 select-none text-left">
+              <span className="text-[11px] font-mono uppercase tracking-wider text-[#8B95A5]">
+                Spam rate
+              </span>
+              <div className="text-2xl font-semibold tabular-nums text-[#EDEDEF]">
+                <AnimatedNumber value={spamRate} />%
+              </div>
+              <span className="text-[11px] font-mono text-[#6B7280]">
+                of analyzed PRs
+              </span>
+            </div>
+
+            {/* 2. Avg spam score */}
+            <div className="rounded-xl border border-white/10 bg-[#0E1116] p-4 flex flex-col justify-between gap-1 select-none text-left">
+              <span className="text-[11px] font-mono uppercase tracking-wider text-[#8B95A5]">
+                Avg spam score
+              </span>
+              <div className="text-2xl font-semibold tabular-nums text-[#EDEDEF]">
+                <AnimatedNumber value={avgSpamScore} />
+              </div>
+              <span className="text-[11px] font-mono text-[#6B7280]">
+                out of 100
+              </span>
+            </div>
+
+            {/* 3. Highest score */}
+            <button
+              type="button"
+              disabled={!highestPR}
+              onClick={onSelectHighest}
+              aria-label={
+                highestPR
+                  ? `Highest score: ${highestScore}, PR #${highestPR.pr.number} by ${highestPR.pr.author}. Click to view PR.`
+                  : "No highest score available"
+              }
+              className={`rounded-xl border border-white/10 bg-[#0E1116] p-4 flex flex-col justify-between gap-1 text-left transition-all outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135] select-none ${
+                highestPR
+                  ? "cursor-pointer hover:border-white/25 hover:bg-white/[0.03] group/highest"
+                  : "opacity-50 cursor-not-allowed"
+              }`}
+            >
+              <div className="flex items-center justify-between w-full">
+                <span className="text-[11px] font-mono uppercase tracking-wider text-[#8B95A5] group-hover/highest:text-[#EDEDEF] transition-colors">
+                  Highest score
+                </span>
+                {highestPR && (
+                  <ChevronRight className="size-3.5 text-[#6B7280] group-hover/highest:text-[#C8F135] group-hover/highest:translate-x-0.5 transition-all" />
+                )}
+              </div>
+              <div className="text-2xl font-semibold tabular-nums text-[#EDEDEF]">
+                <AnimatedNumber value={highestScore} />
+              </div>
+              <span className="text-[11px] font-mono text-[#6B7280] truncate group-hover/highest:text-[#8B95A5] transition-colors">
+                {highestPR
+                  ? `#${highestPR.pr.number} @${highestPR.pr.author}`
+                  : "—"}
+              </span>
+            </button>
+          </div>
+
+          {/* f) Action row */}
+          {stats.spam > 0 && (
+            <div className="flex justify-end pt-1 relative z-10">
+              <button
+                type="button"
+                onClick={onReviewSpam}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:bg-white/[0.07] hover:border-white/20 text-xs font-mono text-[#EDEDEF] transition-all cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135]"
+              >
+                <span>Review spam PRs ({stats.spam})</span>
+                <ChevronRight className="size-3.5 text-[#8B95A5]" />
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -381,13 +820,13 @@ function SortDropdown({
   }, [isOpen]);
 
   const options: { value: SortOption; label: string }[] = [
-    { value: "score_desc", label: "Spam score (high → low)" },
-    { value: "newest", label: "Newest" },
-    { value: "oldest", label: "Oldest" },
+    { value: "score_desc", label: "Spam Score (high→low)" },
+    { value: "newest", label: "Date (newest first)" },
+    { value: "oldest", label: "Date (oldest first)" },
   ];
 
   const currentLabel =
-    options.find((o) => o.value === value)?.label || "Sort";
+    options.find((o) => o.value === value)?.label || "Spam Score (high→low)";
 
   return (
     <div ref={dropdownRef} className="relative">
@@ -590,6 +1029,371 @@ function CommandPalette({
   );
 }
 
+interface NavbarDockProps {
+  normalizedRepo: string | null;
+  onOpenCommand: () => void;
+}
+
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? React.useLayoutEffect : React.useEffect;
+
+const emptySubscribe = () => () => {};
+function useMounted() {
+  return React.useSyncExternalStore(
+    emptySubscribe,
+    () => true,
+    () => false
+  );
+}
+
+function NavbarDock({ normalizedRepo, onOpenCommand }: NavbarDockProps) {
+  const dockRef = React.useRef<HTMLDivElement>(null);
+  const tileWrapperRefs = React.useRef<(HTMLDivElement | null)[]>([]);
+  const tileRefs = React.useRef<(HTMLElement | null)[]>([]);
+  const bubbleRef = React.useRef<HTMLDivElement>(null);
+  const rafRef = React.useRef<number | null>(null);
+
+  const mounted = useMounted();
+  const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
+  const [focusedIndex, setFocusedIndex] = React.useState<number | null>(null);
+  const [canMagnify, setCanMagnify] = React.useState(false);
+  const [reducedMotion, setReducedMotion] = React.useState(false);
+
+  const [bubblePos, setBubblePos] = React.useState<{
+    top: number;
+    left: number;
+    arrowLeft: number;
+    flipped: boolean;
+  } | null>(null);
+
+  React.useEffect(() => {
+
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const deviceQuery = window.matchMedia(
+      "(hover: hover) and (pointer: fine) and (min-width: 640px)"
+    );
+
+    const updateCapabilities = () => {
+      setReducedMotion(motionQuery.matches);
+      setCanMagnify(deviceQuery.matches && !motionQuery.matches);
+    };
+
+    updateCapabilities();
+
+    motionQuery.addEventListener("change", updateCapabilities);
+    deviceQuery.addEventListener("change", updateCapabilities);
+    return () => {
+      motionQuery.removeEventListener("change", updateCapabilities);
+      deviceQuery.removeEventListener("change", updateCapabilities);
+    };
+  }, []);
+
+  const activeIndex = focusedIndex !== null ? focusedIndex : hoveredIndex;
+  const isVisible =
+    mounted &&
+    activeIndex !== null &&
+    (canMagnify || reducedMotion || focusedIndex !== null);
+
+  const updateBubblePosition = React.useCallback(() => {
+    if (activeIndex === null) return;
+    const activeEl = tileRefs.current[activeIndex];
+    if (!activeEl) return;
+
+    const tileRect = activeEl.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const margin = 8;
+    const gap = 12;
+
+    const bubbleEl = bubbleRef.current;
+    const bubbleWidth = bubbleEl
+      ? bubbleEl.offsetWidth
+      : activeIndex === 1
+      ? 142
+      : 68;
+    const bubbleHeight = bubbleEl ? bubbleEl.offsetHeight : 28;
+
+    const tileCenterX = tileRect.left + tileRect.width / 2;
+    const idealLeft = tileCenterX - bubbleWidth / 2;
+
+    // Horizontal clamping: keep 8px margin from viewport edges
+    const maxLeft = Math.max(margin, viewportWidth - bubbleWidth - margin);
+    const clampedLeft = Math.max(margin, Math.min(idealLeft, maxLeft));
+
+    // Shift arrow relative to bubble left edge to point at tile center
+    const rawArrowLeft = tileCenterX - clampedLeft;
+    const arrowLeft = Math.max(12, Math.min(rawArrowLeft, bubbleWidth - 12));
+
+    // Vertical placement: flip above if not enough space below
+    const spaceBelow = viewportHeight - tileRect.bottom;
+    const neededBelow = gap + bubbleHeight + margin;
+    const canFlipAbove = tileRect.top > gap + bubbleHeight + margin;
+    const flipped = spaceBelow < neededBelow && canFlipAbove;
+
+    const top = flipped
+      ? tileRect.top - gap - bubbleHeight
+      : tileRect.bottom + gap;
+
+    setBubblePos({
+      top,
+      left: clampedLeft,
+      arrowLeft,
+      flipped,
+    });
+  }, [activeIndex]);
+
+  useIsomorphicLayoutEffect(() => {
+    if (!isVisible || activeIndex === null) {
+      setBubblePos(null);
+      return;
+    }
+    updateBubblePosition();
+  }, [isVisible, activeIndex, updateBubblePosition]);
+
+  React.useEffect(() => {
+    if (!isVisible || activeIndex === null) return;
+
+    const handleUpdate = () => {
+      updateBubblePosition();
+    };
+
+    window.addEventListener("scroll", handleUpdate, {
+      passive: true,
+      capture: true,
+    });
+    window.addEventListener("resize", handleUpdate);
+
+    return () => {
+      window.removeEventListener("scroll", handleUpdate, true);
+      window.removeEventListener("resize", handleUpdate);
+    };
+  }, [isVisible, activeIndex, updateBubblePosition]);
+
+
+  const handlePointerMove = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!canMagnify && !reducedMotion) return;
+
+      const clientX = e.clientX;
+
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
+
+      rafRef.current = requestAnimationFrame(() => {
+        let closestIndex: number | null = null;
+        let minDistance = Infinity;
+
+        tileWrapperRefs.current.forEach((el, index) => {
+          if (!el) return;
+          const rect = el.getBoundingClientRect();
+          const tileCenter = rect.left + rect.width / 2;
+          const dx = Math.abs(clientX - tileCenter);
+
+          if (dx < minDistance) {
+            minDistance = dx;
+            closestIndex = index;
+          }
+
+          if (canMagnify) {
+            // Falloff: max distance 160px for 44px tiles with 10px gap
+            const maxDistance = 160;
+            const t = Math.max(0, 1 - dx / maxDistance);
+            // Scale: 1.5 at center, ~1.25 at adjacent (~54px), ~1.08 at two away, 1 at far
+            const scale = 1 + 0.5 * Math.pow(t, 1.6);
+            // Icon scales slightly more than tile for depth
+            const iconScale = 1 + (scale - 1) * 0.35;
+
+            el.style.setProperty("--scale", scale.toFixed(3));
+            el.style.setProperty("--icon-scale", iconScale.toFixed(3));
+          }
+        });
+
+        // Set hovered bubble index only if close enough to a tile center (within 35px)
+        const activeHover = minDistance <= 35 ? closestIndex : null;
+        setHoveredIndex((prev) => (prev === activeHover ? prev : activeHover));
+
+        rafRef.current = null;
+      });
+    },
+    [canMagnify, reducedMotion]
+  );
+
+  const resetTiles = React.useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    tileWrapperRefs.current.forEach((el, index) => {
+      if (!el) return;
+      if (focusedIndex === index && canMagnify) {
+        el.style.setProperty("--scale", "1.35");
+        el.style.setProperty("--icon-scale", "1.15");
+      } else {
+        el.style.setProperty("--scale", "1");
+        el.style.setProperty("--icon-scale", "1");
+      }
+    });
+    setHoveredIndex(null);
+  }, [focusedIndex, canMagnify]);
+
+  const handlePointerLeave = React.useCallback(() => {
+    resetTiles();
+  }, [resetTiles]);
+
+  // Handle keyboard focus
+  const handleTileFocus = React.useCallback(
+    (index: number) => {
+      setFocusedIndex(index);
+      if (canMagnify) {
+        const el = tileWrapperRefs.current[index];
+        if (el) {
+          el.style.setProperty("--scale", "1.35");
+          el.style.setProperty("--icon-scale", "1.15");
+        }
+      }
+    },
+    [canMagnify]
+  );
+
+  const handleTileBlur = React.useCallback((index: number) => {
+    const el = tileWrapperRefs.current[index];
+    if (el) {
+      el.style.setProperty("--scale", "1");
+      el.style.setProperty("--icon-scale", "1");
+    }
+    requestAnimationFrame(() => {
+      setFocusedIndex((prev) => (prev === index ? null : prev));
+    });
+  }, []);
+
+  const repoLink = normalizedRepo
+    ? `https://github.com/${normalizedRepo}`
+    : "https://github.com";
+
+  return (
+    <div
+      ref={dockRef}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={handlePointerLeave}
+      onPointerCancel={handlePointerLeave}
+      className="flex items-center gap-2 sm:gap-2.5 overflow-visible relative h-10 sm:h-11 select-none shrink-0"
+    >
+      {/* 1. GitHub Tile */}
+      <div
+        ref={(el) => {
+          tileWrapperRefs.current[0] = el;
+        }}
+        className="dock-tile-wrapper relative flex items-center justify-center size-10 sm:size-11 overflow-visible"
+        style={
+          {
+            "--scale": "1",
+            "--icon-scale": "1",
+            "--press": "1",
+          } as React.CSSProperties
+        }
+      >
+        <a
+          ref={(el) => {
+            tileRefs.current[0] = el;
+          }}
+          href={repoLink}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="GitHub repository"
+          aria-describedby={activeIndex === 0 ? "dock-tile-bubble" : undefined}
+          onFocus={() => handleTileFocus(0)}
+          onBlur={() => handleTileBlur(0)}
+          onPointerEnter={() => {
+            if (canMagnify || reducedMotion) {
+              setHoveredIndex(0);
+            }
+          }}
+          className="dock-tile group relative flex items-center justify-center size-10 sm:size-11 rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.08] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] hover:border-white/30 hover:from-white/[0.14] hover:to-white/[0.05] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.25),0_8px_20px_-4px_rgba(0,0,0,0.5)] cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135] focus-visible:ring-offset-1 focus-visible:ring-offset-[#0E1015] before:absolute before:-inset-1 sm:before:hidden before:content-['']"
+        >
+          <GithubIcon className="size-[18px] sm:size-5 text-[#9CA3AF] group-hover:text-white transition-colors duration-150 dock-icon" />
+        </a>
+      </div>
+
+      {/* 2. Command Menu Tile */}
+      <div
+        ref={(el) => {
+          tileWrapperRefs.current[1] = el;
+        }}
+        className="dock-tile-wrapper relative flex items-center justify-center size-10 sm:size-11 overflow-visible"
+        style={
+          {
+            "--scale": "1",
+            "--icon-scale": "1",
+            "--press": "1",
+          } as React.CSSProperties
+        }
+      >
+        <button
+          ref={(el) => {
+            tileRefs.current[1] = el;
+          }}
+          type="button"
+          onClick={onOpenCommand}
+          aria-label="Command menu (⌘K)"
+          aria-describedby={activeIndex === 1 ? "dock-tile-bubble" : undefined}
+          onFocus={() => handleTileFocus(1)}
+          onBlur={() => handleTileBlur(1)}
+          onPointerEnter={() => {
+            if (canMagnify || reducedMotion) {
+              setHoveredIndex(1);
+            }
+          }}
+          className="dock-tile group relative flex items-center justify-center size-10 sm:size-11 rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.08] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] hover:border-white/30 hover:from-white/[0.14] hover:to-white/[0.05] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.25),0_8px_20px_-4px_rgba(0,0,0,0.5)] cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135] focus-visible:ring-offset-1 focus-visible:ring-offset-[#0E1015] before:absolute before:-inset-1 sm:before:hidden before:content-['']"
+        >
+          <Command className="size-[18px] sm:size-5 text-[#9CA3AF] group-hover:text-white transition-colors duration-150 dock-icon" />
+        </button>
+      </div>
+
+      {/* Portal-rendered Label Bubble below the active tile */}
+      {isVisible &&
+        bubblePos &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            ref={bubbleRef}
+            role="tooltip"
+            id="dock-tile-bubble"
+            className="pointer-events-none fixed z-[9999] flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 bg-[#161B22]/95 backdrop-blur-md text-[12px] font-sans font-medium text-[#EDEDEF] shadow-xl shadow-black/50 whitespace-nowrap animate-dock-bubble"
+            style={{
+              top: `${bubblePos.top}px`,
+              left: `${bubblePos.left}px`,
+            }}
+          >
+            {activeIndex === 0 ? (
+              <span>GitHub</span>
+            ) : (
+              <>
+                <span>Command menu</span>
+                <kbd className="px-1 py-0.5 rounded bg-white/10 border border-white/10 text-[10px] font-mono text-[#9CA3AF] leading-none">
+                  ⌘K
+                </kbd>
+              </>
+            )}
+            <span
+              className={
+                bubblePos.flipped
+                  ? "absolute -bottom-1 size-2 rotate-45 border-r border-b border-white/10 bg-[#161B22] animate-dock-arrow"
+                  : "absolute -top-1 size-2 rotate-45 border-l border-t border-white/10 bg-[#161B22] animate-dock-arrow"
+              }
+              style={{
+                left: `${bubblePos.arrowLeft}px`,
+                transform: "translateX(-50%) rotate(45deg)",
+              }}
+              aria-hidden="true"
+            />
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+}
+
 function PRobeApp() {
   const searchParams = useSearchParams();
 
@@ -606,6 +1410,9 @@ function PRobeApp() {
   const [expandedPrs, setExpandedPrs] = React.useState<Set<number>>(new Set());
   const [commandOpen, setCommandOpen] = React.useState(false);
   const [isScrolled, setIsScrolled] = React.useState(false);
+  const [lastAnalyzedAt, setLastAnalyzedAt] = React.useState<number | null>(
+    null
+  );
 
   // Pagination state
   const initialPage = parseInt(searchParams.get("page") || "1", 10);
@@ -638,9 +1445,37 @@ function PRobeApp() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Sync page changes with URL and history
+  const fetchPage = React.useCallback(
+    async (repoToFetch: string, pageToFetch: number = 1) => {
+      const currentId = ++activeAnalysisIdRef.current;
+      setIsLoading(true);
+      setApiError(null);
+      setElapsedSeconds(0);
+
+      try {
+        const response = await analyzeRepo(repoToFetch, pageToFetch);
+        if (activeAnalysisIdRef.current === currentId) {
+          setData(response);
+          setLastAnalyzedAt(Date.now());
+          setExpandedPrs(new Set());
+          setIsLoading(false);
+        }
+      } catch (err: unknown) {
+        if (activeAnalysisIdRef.current === currentId) {
+          const message =
+            err instanceof Error ? err.message : "Could not reach the server";
+          setApiError(message);
+          setData(null);
+          setIsLoading(false);
+        }
+      }
+    },
+    []
+  );
+
+  // Sync page changes with URL, history, and trigger server-side fetch
   const updatePage = React.useCallback(
-    (newPage: number, shouldScroll = true) => {
+    (newPage: number, shouldScroll = true, shouldFetch = true) => {
       setCurrentPage(newPage);
       if (typeof window !== "undefined") {
         const params = new URLSearchParams(window.location.search);
@@ -663,8 +1498,12 @@ function PRobeApp() {
           block: "start",
         });
       }
+
+      if (shouldFetch && normalizedRepo) {
+        fetchPage(normalizedRepo, newPage);
+      }
     },
-    []
+    [normalizedRepo, fetchPage]
   );
 
   // Browser back/forward button support
@@ -672,14 +1511,18 @@ function PRobeApp() {
     const handlePopState = () => {
       const params = new URLSearchParams(window.location.search);
       const p = parseInt(params.get("page") || "1", 10);
-      setCurrentPage(Number.isFinite(p) && p > 0 ? p : 1);
+      const validPage = Number.isFinite(p) && p > 0 ? p : 1;
+      setCurrentPage(validPage);
+      if (normalizedRepo) {
+        fetchPage(normalizedRepo, validPage);
+      }
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
+  }, [normalizedRepo, fetchPage]);
 
   const executeAnalysis = React.useCallback(
-    async (rawInput: string) => {
+    async (rawInput: string, targetPage: number = 1) => {
       const parsed = parseRepoInput(rawInput);
       if (!parsed) {
         setInputError(
@@ -690,31 +1533,10 @@ function PRobeApp() {
 
       setInputError(null);
       setNormalizedRepo(parsed);
-
-      const currentId = ++activeAnalysisIdRef.current;
-      setIsLoading(true);
-      setApiError(null);
-      setElapsedSeconds(0);
-      updatePage(1, false);
-
-      try {
-        const response = await analyzeRepo(parsed);
-        if (activeAnalysisIdRef.current === currentId) {
-          setData(response);
-          setExpandedPrs(new Set());
-          setIsLoading(false);
-        }
-      } catch (err: unknown) {
-        if (activeAnalysisIdRef.current === currentId) {
-          const message =
-            err instanceof Error ? err.message : "Could not reach the server";
-          setApiError(message);
-          setData(null);
-          setIsLoading(false);
-        }
-      }
+      updatePage(targetPage, false, false);
+      await fetchPage(parsed, targetPage);
     },
-    [updatePage]
+    [updatePage, fetchPage]
   );
 
   // Timer effect for loading counter & 120s timeout
@@ -742,10 +1564,10 @@ function PRobeApp() {
   // Initial load
   React.useEffect(() => {
     const timer = setTimeout(() => {
-      executeAnalysis("vercel/next.js");
+      executeAnalysis("vercel/next.js", initialPage);
     }, 0);
     return () => clearTimeout(timer);
-  }, [executeAnalysis]);
+  }, [executeAnalysis, initialPage]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -759,7 +1581,6 @@ function PRobeApp() {
 
   const handleTabChange = (val: string) => {
     setActiveTab(val);
-    updatePage(1, false);
   };
 
   const toggleExpand = (prNumber: number) => {
@@ -798,6 +1619,57 @@ function PRobeApp() {
     results.filter((r) => !r.verdict).length
   );
 
+  const analyzedWithScore = React.useMemo(() => {
+    return results.filter((r) => typeof r.verdict?.spam_score === "number");
+  }, [results]);
+
+  const avgSpamScore = React.useMemo(() => {
+    if (analyzedWithScore.length === 0) return 0;
+    const sum = analyzedWithScore.reduce(
+      (acc, r) => acc + (r.verdict?.spam_score ?? 0),
+      0
+    );
+    return Math.round(sum / analyzedWithScore.length);
+  }, [analyzedWithScore]);
+
+  const highestPR = React.useMemo(() => {
+    if (analyzedWithScore.length === 0) return null;
+    return analyzedWithScore.reduce((max, r) => {
+      const score = r.verdict?.spam_score ?? 0;
+      const maxScore = max.verdict?.spam_score ?? 0;
+      return score > maxScore ? r : max;
+    }, analyzedWithScore[0]);
+  }, [analyzedWithScore]);
+
+  const highestScore = highestPR?.verdict?.spam_score ?? 0;
+  const spamRate =
+    stats.analyzed > 0 ? Math.round((stats.spam / stats.analyzed) * 100) : 0;
+
+  const handleSelectHighest = React.useCallback(() => {
+    if (!highestPR) return;
+    setExpandedPrs((prev) => new Set(prev).add(highestPR.pr.number));
+    if (activeTab !== "all" && activeTab !== highestPR.verdict?.label) {
+      setActiveTab("all");
+    }
+    setTimeout(() => {
+      const el = document.getElementById(`pr-row-${highestPR.pr.number}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.focus();
+      }
+    }, 60);
+  }, [highestPR, activeTab]);
+
+  const handleReviewSpam = React.useCallback(() => {
+    setActiveTab("spam");
+    if (prListTopRef.current) {
+      prListTopRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, []);
+
   // Sorting
   const sortedResults = React.useMemo(() => {
     return [...results].sort((a, b) => {
@@ -830,13 +1702,18 @@ function PRobeApp() {
     if (activeTab === "legit") {
       return sortedResults.filter((r) => r.verdict?.label === "legit");
     }
+    if (activeTab === "unanalyzed") {
+      return sortedResults.filter((r) => !r.verdict);
+    }
     return sortedResults;
   }, [sortedResults, activeTab]);
 
   // Pagination calculation
   const totalPages = Math.max(
     1,
-    Math.ceil(filteredResults.length / ITEMS_PER_PAGE)
+    data?.totalPages ??
+      (data?.total ? Math.ceil(data.total / ITEMS_PER_PAGE) : undefined) ??
+      (results.length === ITEMS_PER_PAGE ? Math.max(currentPage + 1, 3) : Math.max(currentPage, 1))
   );
   const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
 
@@ -845,7 +1722,25 @@ function PRobeApp() {
     startIndex + ITEMS_PER_PAGE,
     filteredResults.length
   );
-  const paginatedResults = filteredResults.slice(startIndex, endIndex);
+  const paginatedResults =
+    filteredResults.length > ITEMS_PER_PAGE
+      ? filteredResults.slice(startIndex, endIndex)
+      : filteredResults;
+
+  const totalItemsCount =
+    data?.total ??
+    (data?.totalPages
+      ? data.totalPages * ITEMS_PER_PAGE
+      : (results.length === ITEMS_PER_PAGE
+          ? Math.max(currentPage * ITEMS_PER_PAGE, 30)
+          : (safeCurrentPage - 1) * ITEMS_PER_PAGE + results.length));
+
+  const displayStart =
+    results.length > 0 ? (safeCurrentPage - 1) * ITEMS_PER_PAGE + 1 : 0;
+  const displayEnd =
+    results.length > 0
+      ? (safeCurrentPage - 1) * ITEMS_PER_PAGE + paginatedResults.length
+      : 0;
 
   const paginationItems = React.useMemo(
     () => getPaginationItems(safeCurrentPage, totalPages),
@@ -860,15 +1755,6 @@ function PRobeApp() {
       e.preventDefault();
       updatePage(safeCurrentPage + 1);
     }
-  };
-
-  // Cursor spotlight handler for stat cards
-  const handleSpotlight = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    e.currentTarget.style.setProperty("--mouse-x", `${x}px`);
-    e.currentTarget.style.setProperty("--mouse-y", `${y}px`);
   };
 
   const tabs = [
@@ -914,47 +1800,31 @@ function PRobeApp() {
         onFocusInput={() => repoInputRef.current?.focus()}
       />
 
-      {/* Floating Centered Pill Navbar (Final, untouched) */}
-      <nav className="sticky top-4 z-40 px-4">
+      {/* Floating Centered Pill Navbar */}
+      <nav className="sticky top-6 z-40 px-4 pointer-events-none">
         <div
-          className={`mx-auto max-w-xl flex items-center justify-between rounded-full border bg-[#0E1015]/80 backdrop-blur-md transition-all duration-200 ${
+          className={`pointer-events-auto mx-auto w-full flex items-center justify-between rounded-full border bg-[#0E1015]/80 backdrop-blur-md transition-all duration-200 ease-out overflow-visible ${
             isScrolled
-              ? "py-1.5 px-3.5 border-white/20 shadow-xl shadow-black/50 scale-[0.99]"
-              : "py-2 px-4 border-white/10 shadow-sm"
+              ? "h-14 sm:h-[60px] sm:w-[480px] sm:min-w-[480px] px-4 sm:px-6 gap-4 sm:gap-10 border-white/20 shadow-xl shadow-black/50 scale-[0.99]"
+              : "h-14 sm:h-[72px] sm:w-[540px] sm:min-w-[520px] px-4 sm:px-7 gap-4 sm:gap-14 border-white/10 shadow-sm"
           }`}
         >
-          {/* Left: PRobe logo + subtle dot */}
-          <div className="flex items-center gap-2">
-            <span className="size-2 rounded-full bg-[#C8F135] shadow-[0_0_8px_#C8F135]" />
-            <span className="font-semibold text-sm tracking-tight text-[#EDEDEF]">
+          {/* Left: PRobe logo + status dot + triage tag */}
+          <div className="flex items-center gap-3 sm:gap-4 shrink-0">
+            <span className="size-2.5 rounded-full bg-[#C8F135] shadow-[0_0_10px_#C8F135] shrink-0" />
+            <span className="font-semibold text-[20px] sm:text-[22px] tracking-tight text-[#EDEDEF]">
               PRobe
             </span>
-            <span className="text-[10px] font-mono text-[#6B7280] hidden sm:inline ml-1 border-l border-white/10 pl-2">
+            <span className="text-[13px] font-mono text-[#6B7280] hidden sm:inline border-l border-white/10 pl-4">
               triage
             </span>
           </div>
 
-          {/* Right: GitHub link + ⌘K button */}
-          <div className="flex items-center gap-2">
-            <a
-              href="https://github.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-xs text-[#9CA3AF] hover:text-white px-2 py-1 rounded-md transition-colors"
-            >
-              <GithubIcon className="size-3.5" />
-              <span className="hidden sm:inline">GitHub</span>
-            </a>
-
-            <button
-              type="button"
-              onClick={() => setCommandOpen(true)}
-              className="flex items-center gap-1 px-2 py-1 rounded-full border border-white/10 bg-white/[0.04] text-[#9CA3AF] hover:text-white hover:border-white/20 transition-all font-mono text-[11px] cursor-pointer"
-              title="Search commands (⌘K)"
-            >
-              <span>⌘K</span>
-            </button>
-          </div>
+          {/* Right: macOS-style magnifying dock */}
+          <NavbarDock
+            normalizedRepo={normalizedRepo}
+            onOpenCommand={() => setCommandOpen(true)}
+          />
         </div>
       </nav>
 
@@ -1017,7 +1887,7 @@ function PRobeApp() {
                 {isLoading ? (
                   <>
                     <Loader2 className="size-3.5 animate-spin" />
-                    <span>Analyzing</span>
+                    <span>Fetching PRs...</span>
                   </>
                 ) : (
                   <>
@@ -1071,8 +1941,8 @@ function PRobeApp() {
         {isLoading && (
           <div className="mt-8 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 bg-[#12151B] px-4 py-3 text-xs shadow-md animate-fade-rise">
             <div className="flex items-center gap-2.5 text-[#EDEDEF]">
-              <span className="inline-block size-1.5 rounded-full bg-[#C8F135] animate-pulse shrink-0" />
-              <span>Analyzing pull requests... this can take up to a minute</span>
+              <Loader2 className="size-4 animate-spin text-[#C8F135] shrink-0" />
+              <span>Fetching PRs... this may take a few seconds</span>
             </div>
             <div className="font-mono text-[#9CA3AF] bg-[#161B22] px-2 py-0.5 rounded border border-white/10">
               {elapsedSeconds}s elapsed
@@ -1107,51 +1977,27 @@ function PRobeApp() {
           </div>
         )}
 
-        {/* ── 1. STAT SECTION: Keep only the Analyzed card, centered (64px below hero) ── */}
+        {/* ── 1. STAT SECTION: Analyzed card, richer & interactive (64px below hero) ── */}
         <section
           aria-label="Repository Statistics"
-          className="mt-16 max-w-[640px] mx-auto w-full"
+          className="mt-16 max-w-[760px] mx-auto w-full"
         >
-          <div
-            onMouseMove={handleSpotlight}
-            className="group relative rounded-2xl border border-white/[0.08] bg-[#11141A] p-8 transition-colors duration-200 select-none flex flex-col items-center text-center gap-6"
-          >
-            {/* Soft cursor-following spotlight on hover (no lift or click behavior) */}
-            <div
-              className="pointer-events-none absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"
-              style={{
-                background:
-                  "radial-gradient(280px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(255, 255, 255, 0.05), transparent 80%)",
-              }}
-              aria-hidden="true"
-            />
-
-            {/* 1. Small muted mono uppercase label "ANALYZED" with its icon badge beside it */}
-            <div className="flex items-center justify-center gap-2">
-              <div className="size-6 rounded-md border border-white/10 bg-white/[0.04] flex items-center justify-center text-[#8B95A5]">
-                <Activity className="size-3.5" />
-              </div>
-              <span className="text-xs font-mono uppercase tracking-wider text-[#8B95A5]">
-                Analyzed
-              </span>
-            </div>
-
-            {/* 2. Big number (48px, semibold, tabular-nums, keeping count-up animation) */}
-            <div className="text-[48px] leading-none font-semibold tabular-nums text-[#EDEDEF]">
-              <AnimatedNumber value={data ? stats.analyzed : 0} />
-            </div>
-
-            {/* 3. Segmented progress bar (8px tall, fully rounded, 3px gaps, full card width, animates in from 0 on load) */}
-            <div className="w-full">
-              <SegmentedBar
-                spam={stats.spam}
-                lowEffort={stats.lowEffort}
-                legit={stats.legit}
-                unanalyzed={unanalyzedCount}
-                total={stats.analyzed}
-              />
-            </div>
-          </div>
+          <AnalyzedCard
+            data={data}
+            isLoading={isLoading}
+            stats={stats}
+            unanalyzedCount={unanalyzedCount}
+            normalizedRepo={normalizedRepo}
+            activeTab={activeTab}
+            onTabChange={handleTabChange}
+            onSelectHighest={handleSelectHighest}
+            onReviewSpam={handleReviewSpam}
+            lastAnalyzedAt={lastAnalyzedAt}
+            highestPR={highestPR}
+            highestScore={highestScore}
+            avgSpamScore={avgSpamScore}
+            spamRate={spamRate}
+          />
         </section>
 
         {/* ── 2. TOOLBAR: Vertical Rhythm -> 48px below stat cards ── */}
@@ -1299,6 +2145,7 @@ function PRobeApp() {
                 return (
                   <div
                     key={pr.number}
+                    id={`pr-row-${pr.number}`}
                     tabIndex={0}
                     role="button"
                     aria-expanded={isExpanded}
@@ -1489,23 +2336,22 @@ function PRobeApp() {
             )}
           </div>
 
-          {/* Pagination Bar (Hidden when <= 10 items) */}
-          {!isLoading && filteredResults.length > ITEMS_PER_PAGE && (
+          {/* Pagination Bar: Previous / Next buttons + page numbers */}
+          {!isLoading && results.length > 0 && (
             <nav
               tabIndex={0}
               onKeyDown={handlePaginationKeyDown}
               aria-label="Pagination"
-              className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 text-xs font-mono outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135] rounded px-1"
+              className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 text-xs font-mono outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135] rounded px-1"
             >
               <span className="text-[#8B95A5]">
-                Showing {filteredResults.length === 0 ? 0 : startIndex + 1}–
-                {endIndex} of {filteredResults.length}
+                Showing {displayStart}–{displayEnd} of {totalItemsCount}
               </span>
 
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  disabled={safeCurrentPage <= 1}
+                  disabled={safeCurrentPage <= 1 || isLoading}
                   onClick={() => updatePage(safeCurrentPage - 1)}
                   aria-label="Previous page"
                   className="px-2.5 py-1 rounded border border-white/10 bg-[#12151B] text-[#EDEDEF] hover:bg-[#161B22] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1 transition-colors outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135]"
@@ -1531,6 +2377,7 @@ function PRobeApp() {
                       <button
                         key={item}
                         type="button"
+                        disabled={isLoading}
                         onClick={() => updatePage(item)}
                         aria-label={`Go to page ${item}`}
                         aria-current={isActive ? "page" : undefined}
@@ -1548,7 +2395,7 @@ function PRobeApp() {
 
                 <button
                   type="button"
-                  disabled={safeCurrentPage >= totalPages}
+                  disabled={safeCurrentPage >= totalPages || isLoading}
                   onClick={() => updatePage(safeCurrentPage + 1)}
                   aria-label="Next page"
                   className="px-2.5 py-1 rounded border border-white/10 bg-[#12151B] text-[#EDEDEF] hover:bg-[#161B22] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1 transition-colors outline-none focus-visible:ring-1 focus-visible:ring-[#C8F135]"
