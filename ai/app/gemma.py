@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Optional
 
 from google import genai
@@ -16,6 +17,18 @@ from app.prompts import build_pr_analysis_prompt
 from app.schemas import AnalyzeRequest, AnalyzeResponse, GemmaRawOutput
 
 logger = logging.getLogger("prsift.gemma")
+
+_client: Optional[genai.Client] = None
+_client_api_key: Optional[str] = None
+
+
+def get_genai_client(api_key: str) -> genai.Client:
+    """Return a cached, reusable genai.Client instance."""
+    global _client, _client_api_key
+    if _client is None or _client_api_key != api_key:
+        _client = genai.Client(api_key=api_key)
+        _client_api_key = api_key
+    return _client
 
 
 def parse_model_response(raw_text: str) -> GemmaRawOutput:
@@ -46,64 +59,79 @@ def parse_model_response(raw_text: str) -> GemmaRawOutput:
     return GemmaRawOutput.model_validate(parsed_json)
 
 
-async def execute_model_call(
-    client: genai.Client,
-    model: str,
-    prompt: str,
-    timeout: float = 5.0,
-) -> str:
-    """Execute generate_content in a thread pool with temperature=0.1, max_output_tokens=150, minimal thinking, and 5s timeout."""
-    loop = asyncio.get_running_loop()
-
-    def _call() -> str:
-        config = types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=150,
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.MINIMAL
-            ),
-        )
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=config,
-        )
-        return response.text or ""
-
-    return await asyncio.wait_for(loop.run_in_executor(None, _call), timeout=timeout)
+def _is_rate_limit_or_unavailable(exc: Exception) -> bool:
+    """Check if exception represents HTTP 429 (rate limit) or 503 (unavailable)."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code in (429, 503):
+        return True
+    err_str = str(exc).lower()
+    return any(
+        x in err_str
+        for x in ["429", "503", "resource_exhausted", "unavailable", "rate limit"]
+    )
 
 
 async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
     """
-    Analyze a PR using the Gemma 4 model with fallback to heuristics.
-    Strict 5s timeout per attempt, retries once on call/timeout/parse failure before falling back.
+    Analyze a PR using the Gemma 4 async client with fallback to heuristics.
+    Non-blocking async call, overall 10s timeout, retries once after 1s only on 429/503.
     """
+    start_time = time.perf_counter()
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        return run_heuristic_triage(
-            pr, "GEMINI_API_KEY environment variable is missing or empty"
-        )
-
     model_name = os.environ.get("GEMMA_MODEL", "gemma-4-31b-it").strip() or "gemma-4-31b-it"
 
+    def _finish(resp: AnalyzeResponse, source: str) -> AnalyzeResponse:
+        elapsed_ms = int(round((time.perf_counter() - start_time) * 1000))
+        perf_msg = f"[perf] /analyze {elapsed_ms}ms model={model_name} source={source}"
+        print(perf_msg, flush=True)
+        logger.info(perf_msg)
+        return resp
+
+    if not api_key:
+        fallback = run_heuristic_triage(
+            pr, "GEMINI_API_KEY environment variable is missing or empty"
+        )
+        return _finish(fallback, "fallback")
+
     try:
-        client = genai.Client(api_key=api_key)
+        client = get_genai_client(api_key)
     except Exception as e:
-        return run_heuristic_triage(pr, f"Failed to initialize GenAI client: {e}")
+        fallback = run_heuristic_triage(pr, f"Failed to initialize GenAI client: {e}")
+        return _finish(fallback, "fallback")
 
-    prompt = build_pr_analysis_prompt(pr)
+    try:
+        prompt = build_pr_analysis_prompt(pr)
+    except Exception as e:
+        fallback = run_heuristic_triage(pr, f"Failed to build prompt: {e}")
+        return _finish(fallback, "fallback")
 
+    config = types.GenerateContentConfig(
+        temperature=0.1,
+        max_output_tokens=300,
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.MINIMAL
+        ),
+    )
+
+    overall_deadline = start_time + 10.0
     last_error: Optional[Exception] = None
 
-    # Call with 1 retry (total 2 attempts, 5s timeout each)
     for attempt in range(1, 3):
+        remaining_timeout = overall_deadline - time.perf_counter()
+        if remaining_timeout <= 0.2:
+            last_error = TimeoutError("Overall 10s request budget exhausted")
+            break
+
         try:
-            raw_text = await execute_model_call(
-                client=client,
-                model=model_name,
-                prompt=prompt,
-                timeout=5.0,
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=config,
+                ),
+                timeout=remaining_timeout,
             )
+            raw_text = response.text or ""
             raw_output = parse_model_response(raw_text)
 
             # Raw spam score bounded 0-100
@@ -119,7 +147,7 @@ async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
                     except (ValueError, TypeError):
                         pass
 
-            # Compute label in code from spam_score (do NOT trust model's label)
+            # Compute label in code from spam_score
             label = compute_label(spam_score)
 
             # Derive suggested_action from label if missing or invalid
@@ -128,33 +156,43 @@ async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
                 suggested_action=raw_output.suggested_action,
             )
 
-            # Clean and cap reasons to max 3 short strings
-            reasons = [
-                str(r).strip()
-                for r in raw_output.reasons
-                if str(r).strip()
-            ][:3]
+            # Clean and cap reasons to max 3 short strings of at most 12 words
+            clean_reasons = []
+            for r in raw_output.reasons:
+                text = str(r).strip()
+                if text:
+                    words = text.split()
+                    if len(words) > 12:
+                        text = " ".join(words[:12])
+                    clean_reasons.append(text)
+            reasons = clean_reasons[:3]
 
             if not reasons:
                 reasons = [f"PR evaluated with spam score {spam_score}/100"]
 
-            return AnalyzeResponse(
+            res = AnalyzeResponse(
                 label=label,
                 spam_score=spam_score,
                 reasons=reasons,
                 suggested_action=suggested_action,
             )
+            return _finish(res, "gemma")
 
         except asyncio.TimeoutError as te:
             last_error = te
-            print(f"[Gemma Model Call] Attempt {attempt} timed out after 5s", flush=True)
-            logger.warning(f"Gemma model call attempt {attempt} timed out after 5s")
+            logger.warning(f"Gemma model call attempt {attempt} timed out")
+            break
         except Exception as ex:
             last_error = ex
-            print(f"[Gemma Model Call] Attempt {attempt} failed: {ex}", flush=True)
             logger.warning(f"Gemma model call attempt {attempt} failed: {ex}")
+            # Retry once after 1s only on HTTP 429/503
+            if attempt == 1 and _is_rate_limit_or_unavailable(ex):
+                await asyncio.sleep(1.0)
+                continue
+            break
 
-    # If both attempts failed or parsing failed twice, return heuristic fallback
-    return run_heuristic_triage(
-        pr, f"Model call or response parsing failed after 2 attempts: {last_error}"
+    # On timeout or any error return heuristic fallback (never a 500)
+    fallback = run_heuristic_triage(
+        pr, f"Model call failed or timed out: {last_error}"
     )
+    return _finish(fallback, "fallback")
