@@ -154,12 +154,17 @@ export function handleOctokitError(err) {
  * Fetches open pull requests, detailed PR data, author history, and computed signals.
  *
  * @param {string} normalizedRepo - "owner/repo"
- * @param {number} limit - Number of PRs to fetch (1-20)
- * @returns {Promise<Array<{ payload: object, prSummary: object, headSha: string, signals: object }>>}
+ * @param {number} limit - Number of PRs to fetch (default 10, max 20)
+ * @param {number} page - Page number (default 1)
+ * @param {string} sort - Sort option ("spam_score", "created_at_asc", "created_at_desc")
+ * @returns {Promise<Array<{ payload: object, prSummary: object, headSha: string, signals: object, error?: string }>>}
  */
-export async function fetchRepoPullRequests(normalizedRepo, limit = 10) {
+export async function fetchRepoPullRequests(normalizedRepo, limit = 10, page = 1, sort = "spam_score") {
   const [owner, repo] = normalizedRepo.split("/");
   const octokit = getOctokit();
+
+  const direction = sort === "created_at_asc" ? "asc" : "desc";
+  const perPage = Math.min(20, Math.max(1, limit || 10));
 
   let pullsListRes;
   try {
@@ -168,9 +173,9 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10) {
       repo,
       state: "open",
       sort: "created",
-      direction: "desc",
-      per_page: limit,
-      page: 1,
+      direction,
+      per_page: perPage,
+      page,
     });
   } catch (err) {
     handleOctokitError(err);
@@ -299,7 +304,40 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10) {
           signals,
         };
       } catch (err) {
-        handleOctokitError(err);
+        if (
+          err.statusCode === 429 ||
+          (err.message && err.message.toLowerCase().includes("rate limit"))
+        ) {
+          handleOctokitError(err);
+        }
+        return {
+          payload: {
+            number: pr.number,
+            title: pr.title || "",
+            body: pr.body ? String(pr.body).slice(0, 2000) : "",
+            url: pr.html_url || "",
+            created_at: pr.created_at,
+            author: { login: pr.user?.login || "" },
+            stats: { changed_files: 0, additions: 0, deletions: 0 },
+            files: [],
+            context: {},
+          },
+          prSummary: {
+            number: pr.number,
+            title: pr.title || "",
+            url: pr.html_url || "",
+            author: pr.user?.login || "",
+            authorCreatedAt: null,
+            createdAt: pr.created_at,
+            additions: 0,
+            deletions: 0,
+            changedFiles: 0,
+            bodyPreview: pr.body ? String(pr.body).slice(0, 300) : "",
+          },
+          headSha: pr.head?.sha || "",
+          signals: {},
+          error: err.message || "Failed to fetch PR details",
+        };
       }
     })
   );

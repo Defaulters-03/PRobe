@@ -10,10 +10,11 @@ def build_pr_analysis_prompt(pr: AnalyzeRequest) -> str:
     Defensively truncates inputs: body to 1500 chars, patches to 800 chars, max 3 files.
     """
     ctx = pr.context or {}
+    files = pr.files or []
 
-    # Defensively cut input size
+    # Defensively cut input size (but report the TRUE body length to the model)
     body_text = (pr.body or "").strip()[:1500]
-    body_length = ctx.get("body_length", len(body_text))
+    body_length = ctx.get("body_length", len(pr.body or ""))
 
     unchecked_checklist = ctx.get("unchecked_checklist_items", 0)
 
@@ -47,17 +48,17 @@ def build_pr_analysis_prompt(pr: AnalyzeRequest) -> str:
     docs_only = ctx.get("docs_only")
     if docs_only is None:
         docs_only = bool(
-            pr.files
+            files
             and all(
                 f.filename.lower().endswith((".md", ".txt", ".rst", ".adoc"))
-                for f in pr.files
+                for f in files
             )
         )
 
     file_extensions = ctx.get("file_extensions")
     if not file_extensions:
         file_extensions = sorted(
-            list({Path(f.filename).suffix for f in pr.files if Path(f.filename).suffix})
+            list({Path(f.filename).suffix for f in files if Path(f.filename).suffix})
         )
 
     similar_prs = ctx.get("similar_open_prs", [])
@@ -71,11 +72,11 @@ def build_pr_analysis_prompt(pr: AnalyzeRequest) -> str:
 
     # Defensively cut files to max 3, each patch to 800 chars
     files_summary = []
-    for f in pr.files[:3]:
+    for f in files[:3]:
         patch = (f.patch or "").strip()[:800]
         files_summary.append(f"{f.filename} (+{f.additions}/-{f.deletions}):\n{patch}")
-    if len(pr.files) > 3:
-        files_summary.append(f"...and {len(pr.files) - 3} more files")
+    if len(files) > 3:
+        files_summary.append(f"...and {len(files) - 3} more files")
     files_str = "\n".join(files_summary) if files_summary else "No diffs."
 
     return f"""You are an open-source maintainer triaging PRs for spam/low-effort vs legitimate contributions.
