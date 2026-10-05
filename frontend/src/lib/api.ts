@@ -9,17 +9,23 @@ const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK === "true";
  * Analyse a GitHub repo's open pull requests.
  * When USE_MOCK is true the network is skipped entirely.
  */
-export async function analyzeRepo(repo: string): Promise<AnalyzeResponse> {
+export async function analyzeRepo(
+  repo: string,
+  page: number = 1
+): Promise<AnalyzeResponse> {
   if (USE_MOCK) {
-    return getMockResults(repo);
+    return getMockResults(repo, page);
   }
 
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/api/analyze`, {
+    const url = new URL(`${API_URL}/api/analyze`);
+    url.searchParams.set("page", String(page));
+
+    res = await fetch(url.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo, limit: 10 }),
+      body: JSON.stringify({ repo, limit: 10, page }),
     });
   } catch {
     throw new Error("Could not reach the server");
