@@ -1,0 +1,90 @@
+{
+  "obvious_spam": {
+    "number": 101,
+    "title": "Update README.md",
+    "body": "",
+    "url": "https://github.com/prsift/example-repo/pull/101",
+    "created_at": "2026-10-04T12:00:00Z",
+    "author": {
+      "login": "spammy-hacktober-bot",
+      "account_created_at": "2026-10-03T08:00:00Z",
+      "public_repos": 1,
+      "followers": 0
+    },
+    "stats": {
+      "changed_files": 1,
+      "additions": 1,
+      "deletions": 1
+    },
+    "files": [
+      {
+        "filename": "README.md",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 1,
+        "patch": "@@ -12,3 +12,3 @@\n-PRSift is an open-source tool.\n+PRSift is an open-source tool. \n"
+      }
+    ]
+  },
+  "borderline": {
+    "number": 102,
+    "title": "Fix typo in documentation",
+    "body": "Fixed typo in the installation section of the getting started guide.",
+    "url": "https://github.com/prsift/example-repo/pull/102",
+    "created_at": "2026-09-20T15:30:00Z",
+    "author": {
+      "login": "newbie-contributor",
+      "account_created_at": "2026-06-15T11:00:00Z",
+      "public_repos": 3,
+      "followers": 1
+    },
+    "stats": {
+      "changed_files": 1,
+      "additions": 2,
+      "deletions": 2
+    },
+    "files": [
+      {
+        "filename": "docs/install.md",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 2,
+        "patch": "@@ -30,4 +30,4 @@\n-Run the following commnd to start:\n+Run the following command to start:\n"
+      }
+    ]
+  },
+  "legit": {
+    "number": 103,
+    "title": "fix: resolve connection leak in worker pool (#452)",
+    "body": "Fixes #452. Under high concurrent load, connections were not being returned to the pool due to unhandled exceptions in the keep-alive handler. Added try/finally block and comprehensive regression unit tests.",
+    "url": "https://github.com/prsift/example-repo/pull/103",
+    "created_at": "2026-10-01T14:15:00Z",
+    "author": {
+      "login": "senior-engineer-dev",
+      "account_created_at": "2023-03-12T09:00:00Z",
+      "public_repos": 35,
+      "followers": 128
+    },
+    "stats": {
+      "changed_files": 2,
+      "additions": 38,
+      "deletions": 8
+    },
+    "files": [
+      {
+        "filename": "src/pool/manager.py",
+        "status": "modified",
+        "additions": 14,
+        "deletions": 8,
+        "patch": "@@ -102,8 +102,14 @@\n-        conn = self.acquire()\n-        return conn.execute(task)\n+        conn = self.acquire()\n+        try:\n+            return conn.execute(task)\n+        finally:\n+            self.release(conn)\n"
+      },
+      {
+        "filename": "tests/test_pool.py",
+        "status": "modified",
+        "additions": 24,
+        "deletions": 0,
+        "patch": "@@ -180,0 +181,24 @@\n+def test_connection_pool_leak_on_exception():\n+    pool = ConnectionPool(max_size=5)\n+    with pytest.raises(TaskFailedError):\n+        pool.run(failing_task)\n+    assert pool.available_connections() == 5\n"
+      }
+    ]
+  }
+}
