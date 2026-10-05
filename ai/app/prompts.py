@@ -13,7 +13,11 @@ def build_pr_analysis_prompt(pr: AnalyzeRequest) -> str:
 
     # Extract or infer fields from context and request
     body_text = (pr.body or "").strip()
-    body_length = ctx.get("body_length", len(body_text))
+    # Truncate body to at most 1500 chars
+    if len(body_text) > 1500:
+        body_text = body_text[:1500]
+
+    body_length = ctx.get("body_length", len(pr.body or ""))
     unchecked_checklist = ctx.get("unchecked_checklist_items", 0)
 
     raw_issues = ctx.get("linked_issues")
@@ -70,19 +74,19 @@ def build_pr_analysis_prompt(pr: AnalyzeRequest) -> str:
     author_prs_last_7d = ctx.get("author_prs_last_7d", 0)
     author_merged_prs_in_repo = ctx.get("author_merged_prs_in_repo", 0)
 
-    # Format file diffs
+    # Format file diffs: at most 3 files, each patch at most 800 chars
     files_summary = []
-    for f in pr.files:
+    for f in (pr.files or [])[:3]:
         patch_text = f.patch or ""
-        if len(patch_text) > 2000:
-            patch_text = patch_text[:2000] + "\n...[diff truncated]..."
+        if len(patch_text) > 800:
+            patch_text = patch_text[:800]
         files_summary.append(
             f"- File: {f.filename} ({f.status}, +{f.additions}/-{f.deletions})\n  Patch:\n{patch_text}"
         )
     files_block = "\n".join(files_summary) if files_summary else "No file changes provided."
 
     return f"""You are an experienced open-source maintainer triaging incoming pull requests.
-Your task is to judge whether the pull request is spam / low effort (the junk-PR problem, such as trivial Hacktoberfest-style PRs) or a legitimate contribution.
+Your task is to judge whether the pull request is spam / low effort or a legitimate contribution.
 
 FACTS:
 - PR Number: #{pr.number}
@@ -118,131 +122,55 @@ FACTS:
 {files_block}
 
 TRIAGE RUBRIC:
-Strong spam signals:
-- whitespace_only
-- generic_title with no explanation
-- docs_only changes unrelated to the project
-- author_prs_last_7d >= 10
-- tiny change with no linked issue (<= 4 changed lines without a linked issue)
-- unfilled template (unchecked_checklist_items > 0 with an empty description)
-- near-duplicate titles in similar_open_prs
-
-Strong legit signals:
-- author_merged_prs_in_repo >= 1
-- linked_issues present and a meaningful code change
-- a clear specific description
-- changes that match the described fix
-
-NEVER penalise on their own:
-- Being a first-time contributor
-- Being from a fork
-- A short but specific description
-- A polished, AI-sounding description when the change is real and fixes a linked issue
-
-Scoring & Threshold Rules:
-- Score 0-100 where higher = more likely spam.
-- >=70 is spam (suggested_action: "close")
-- 40-69 is low_effort (suggested_action: "request_changes")
-- <40 is legit (suggested_action: "review")
-- Require at least TWO independent strong spam signals before giving a score of 70 or more.
-- One weak signal means low_effort at most (score 40-69).
-- A PR with legitimate code changes addressing an issue must score under 40.
-
-EVIDENCE REQUIREMENT:
-Every reason must cite concrete evidence from this PR (a number from the facts, or a quote of at most 8 words from the title or description). No generic statements.
+Strong spam signals: whitespace_only, generic_title with no explanation, docs_only unrelated to project, author_prs_last_7d >= 10, tiny change (<=4 lines) with no linked issue, unfilled template with empty description, duplicate titles.
+Strong legit signals: author_merged_prs_in_repo >= 1, linked_issues with meaningful code changes, clear specific description, changes matching description.
+Scoring: 0-100 (higher = spam). >=70 spam (action: close), 40-69 low_effort (action: request_changes), <40 legit (action: review).
+Require >=2 strong spam signals for score >=70. One weak signal is low_effort (40-69). Code fixes with linked issues must score <40.
 
 EXAMPLES:
 
-Example 1 (Obvious spam):
-FACTS:
-- Title: "Update README.md"
-- Description / Body: "[EMPTY]"
-- Total Changed Lines: 2 (+1/-1)
-- Whitespace Only: True
-- Generic Title Flag: True
-- Author PRs in Last 7 Days: 14
-- Linked Issues: []
+Example 1 (Spam):
 Output:
 {{
   "spam_score": 95,
   "reasons": [
     "whitespace_only change modifying 2 lines",
-    "Generic title \\"Update README.md\\" with empty description",
-    "Author opened 14 PRs in the last 7 days"
+    "Generic title with empty description",
+    "Author opened 14 PRs in 7 days"
   ],
   "suggested_action": "close"
 }}
 
-Example 2 (Borderline docs typo):
-FACTS:
-- Title: "Fix typo in documentation"
-- Description / Body: "Fixed typo in the installation section of the getting started guide."
-- Total Changed Lines: 4 (+2/-2)
-- Docs Only: True
-- Whitespace Only: False
-- Generic Title Flag: False
-- Author PRs in Last 7 Days: 1
-- Linked Issues: []
+Example 2 (Low effort):
 Output:
 {{
   "spam_score": 45,
   "reasons": [
-    "Small docs-only fix of 4 lines without a linked issue",
-    "Title \\"Fix typo in documentation\\" addresses minor typo",
-    "One weak signal without strong spam signals qualifies as low effort"
+    "Small docs-only fix of 4 lines without linked issue",
+    "Title addresses minor documentation typo",
+    "Single weak signal qualifies as low effort"
   ],
   "suggested_action": "request_changes"
 }}
 
-Example 3 (Legit fix with a linked issue):
-FACTS:
-- Title: "fix: resolve connection leak in worker pool (#452)"
-- Description / Body: "Fixes #452. Under high concurrent load, connections were not being returned to the pool due to unhandled exceptions in the keep-alive handler. Added try/finally block and comprehensive regression unit tests."
-- Total Changed Lines: 46 (+38/-8)
-- Docs Only: False
-- Whitespace Only: False
-- Linked Issues: ["#452"]
-- Author Merged PRs in Repo: 5
-- Author PRs in Last 7 Days: 2
+Example 3 (Legit):
 Output:
 {{
   "spam_score": 5,
   "reasons": [
     "Resolves linked issue #452 with 46 changed lines",
-    "Changes match described fix \\"resolve connection leak in worker pool\\"",
-    "Author has 5 merged PRs in this repository"
-  ],
-  "suggested_action": "review"
-}}
-
-Example 4 (A first-timer's real contribution):
-FACTS:
-- Title: "fix: handle null pointer in auth token parser (#89)"
-- Description / Body: "Fixes #89. Added check for missing Bearer prefix in Authorization header."
-- Total Changed Lines: 18 (+14/-4)
-- Author Association: "FIRST_TIME_CONTRIBUTOR"
-- Is Fork: True
-- Author Merged PRs in Repo: 0
-- Author PRs in Last 7 Days: 1
-- Linked Issues: ["#89"]
-- Docs Only: False
-- Whitespace Only: False
-Output:
-{{
-  "spam_score": 10,
-  "reasons": [
-    "Addresses linked issue #89 with 18 lines of code and tests",
-    "Specific fix matching description \\"Added check for missing Bearer prefix\\"",
-    "First-time contributor from fork making legitimate bugfix"
+    "Changes match described connection leak fix",
+    "Author has 5 merged PRs in repo"
   ],
   "suggested_action": "review"
 }}
 
 OUTPUT FORMAT:
-Output ONLY a JSON object with keys "spam_score", "reasons", and "suggested_action".
-- "spam_score": integer 0-100
-- "reasons": array of max 3 short explanatory strings citing concrete evidence
-- "suggested_action": "close", "request_changes", or "review"
-
-No markdown fences, no preamble, no commentary. Output only the raw JSON object.
+Output ONLY compact JSON: at most 3 reasons, each at most 12 words, no markdown fences, no text outside the JSON.
+Schema:
+{{
+  "spam_score": <integer 0-100>,
+  "reasons": [<at most 3 strings, each at most 12 words>],
+  "suggested_action": <"close" | "request_changes" | "review">
+}}
 """

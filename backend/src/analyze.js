@@ -36,6 +36,16 @@ export async function runWithConcurrency(items, limit, fn) {
  */
 export async function analyzeSinglePR(repo, item) {
   const { payload, prSummary, headSha, signals } = item;
+
+  if (item.error) {
+    return {
+      pr: prSummary,
+      verdict: null,
+      signals: signals || {},
+      error: item.error,
+    };
+  }
+
   const context = payload.context || signals;
   const authorAssociation = (context?.author_association || "").toUpperCase();
 
@@ -163,4 +173,36 @@ export async function analyzePRs(repo, prItems) {
     }
     return resultItem;
   });
+}
+
+/**
+ * Sorts analyzed results by the given sort option.
+ * Options:
+ * - "spam_score": high to low (default)
+ * - "created_at_desc": newest first
+ * - "created_at_asc": oldest first
+ *
+ * @param {Array<{ pr: object, verdict: object | null, signals: object, error?: string }>} results
+ * @param {string} sort
+ * @returns {Array<{ pr: object, verdict: object | null, signals: object, error?: string }>}
+ */
+export function sortResults(results, sort = "spam_score") {
+  const sorted = [...results];
+  if (sort === "created_at_asc") {
+    sorted.sort(
+      (a, b) => new Date(a.pr.createdAt).getTime() - new Date(b.pr.createdAt).getTime()
+    );
+  } else if (sort === "created_at_desc") {
+    sorted.sort(
+      (a, b) => new Date(b.pr.createdAt).getTime() - new Date(a.pr.createdAt).getTime()
+    );
+  } else {
+    // "spam_score": default high -> low
+    sorted.sort((a, b) => {
+      const scoreA = typeof a.verdict?.spam_score === "number" ? a.verdict.spam_score : -1;
+      const scoreB = typeof b.verdict?.spam_score === "number" ? b.verdict.spam_score : -1;
+      return scoreB - scoreA;
+    });
+  }
+  return sorted;
 }

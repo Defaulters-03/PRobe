@@ -63,12 +63,12 @@ async def health_check() -> dict:
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze_pr(payload: AnalyzeRequest) -> AnalyzeResponse:
+def analyze_pr(payload: AnalyzeRequest) -> AnalyzeResponse:
     """
     Analyze incoming GitHub pull request data to judge whether it is spam / low effort
     or a legitimate open-source contribution.
     """
-    return await analyze_pull_request(payload)
+    return analyze_pull_request(payload)
 
 
 if __name__ == "__main__":

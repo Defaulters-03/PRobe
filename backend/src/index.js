@@ -5,7 +5,8 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { normalizeRepo, parseLimit, fetchRepoPullRequests } from "./github.js";
-import { analyzePRs } from "./analyze.js";
+import { analyzePRs, sortResults } from "./analyze.js";
+import { responseCache } from "./cache.js";
 
 dotenv.config();
 
@@ -29,9 +30,9 @@ app.use(
 
 app.use(express.json());
 
-// GET /health -> {"ok":true}
+// GET /health -> 200 OK {"ok":true}
 app.get("/health", (req, res) => {
-  res.json({ ok: true });
+  res.status(200).json({ ok: true });
 });
 
 // POST /api/analyze
@@ -49,22 +50,50 @@ app.post("/api/analyze", async (req, res, next) => {
 
     console.log(`[PRobe] Normalized repo: ${normalizedRepo}`);
 
-    // 2. limit: default 10, max 20
-    const parsedLimit = parseLimit(limit);
+    // Pagination: accept optional "page" param (default 1). Page size fixed at 10.
+    const page = Math.max(1, parseInt(req.query.page || req.body?.page || "1", 10) || 1);
+    const pageSize = 10;
+    const offset = (page - 1) * pageSize;
 
-    // 3 & 4. Fetch PRs and build payloads
-    const prItems = await fetchRepoPullRequests(normalizedRepo, parsedLimit);
+    // Sorting: options "spam_score", "created_at_asc", "created_at_desc" (default: "spam_score")
+    const rawSort = (req.query.sort || req.body?.sort || "spam_score").toLowerCase();
+    const validSorts = ["spam_score", "created_at_asc", "created_at_desc"];
+    const sort = validSorts.includes(rawSort) ? rawSort : "spam_score";
 
-    // 5, 6, 7 & 8. Analyze PRs (AI or mock, max 3 parallel, cached)
-    const results = await analyzePRs(normalizedRepo, prItems);
+    // Limit param (default 10, max 20)
+    const parsedLimit = req.body?.limit ? parseLimit(limit) : pageSize;
+
+    // Check full response cache (10 min) keyed by repo, page, and sort
+    const responseCacheKey = `${normalizedRepo}#page=${page}#sort=${sort}#limit=${parsedLimit}`;
+    const cachedResponse = responseCache.get(responseCacheKey);
+    if (cachedResponse) {
+      return res.json(cachedResponse);
+    }
+
+    // Fetch PRs from GitHub using pagination / sorting params
+    const prItems = await fetchRepoPullRequests(normalizedRepo, parsedLimit, page, sort);
+
+    // Parallel AI calls with concurrency 5
+    const analyzedResults = await analyzePRs(normalizedRepo, prItems);
+
+    // Apply sorting before slicing for pagination
+    const sortedResults = sortResults(analyzedResults, sort);
+    const paginatedResults = sortedResults.slice(0, pageSize);
 
     // Success response format
-    return res.json({
+    const responseData = {
       repo: normalizedRepo,
       analyzedAt: new Date().toISOString(),
-      count: results.length,
-      results,
-    });
+      page,
+      sort,
+      count: paginatedResults.length,
+      results: paginatedResults,
+    };
+
+    // Cache full response for 10 minutes
+    responseCache.set(responseCacheKey, responseData);
+
+    return res.json(responseData);
   } catch (err) {
     next(err);
   }

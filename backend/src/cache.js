@@ -38,3 +38,6 @@ export class MemoryCache {
 
 // 10 minutes in-memory verdict cache
 export const verdictCache = new MemoryCache(10 * 60 * 1000);
+
+// 10 minutes in-memory full response cache for pagination and sorting
+export const responseCache = new MemoryCache(10 * 60 * 1000);
