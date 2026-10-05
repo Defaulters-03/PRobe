@@ -1,4 +1,8 @@
 import { Octokit } from "@octokit/rest";
+import dotenv from "dotenv";
+import { buildSignals, fetchAuthorHistoryBatch } from "./signals.js";
+
+dotenv.config();
 
 let octokitInstance = null;
 let tokenWarned = false;
@@ -40,39 +44,58 @@ export function normalizeRepo(input) {
 
   let str = input.trim();
 
-  // If input is an absolute URL
-  try {
-    if (str.startsWith("http://") || str.startsWith("https://")) {
-      const parsedUrl = new URL(str);
-      const host = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
-      if (host !== "github.com") {
-        return null;
-      }
-      str = parsedUrl.pathname;
-    }
-  } catch {
-    return null;
+  // Strip hash / fragment first
+  const hashIdx = str.indexOf("#");
+  if (hashIdx !== -1) {
+    str = str.slice(0, hashIdx);
   }
 
-  // Strip common prefixes
-  str = str.replace(/^(?:https?:\/\/)?(?:www\.)?github\.com\//i, "");
-  str = str.replace(/^git@github\.com:/i, "");
-  str = str.replace(/\.git$/i, "");
+  // Strip query string
+  const queryIdx = str.indexOf("?");
+  if (queryIdx !== -1) {
+    str = str.slice(0, queryIdx);
+  }
+
+  // Handle git@github.com:owner/repo.git
+  if (str.startsWith("git@github.com:")) {
+    str = str.slice("git@github.com:".length);
+  } else {
+    // If input is an absolute URL
+    try {
+      if (/^https?:\/\//i.test(str)) {
+        const parsedUrl = new URL(str);
+        const host = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
+        if (host !== "github.com") {
+          return null;
+        }
+        str = parsedUrl.pathname;
+      }
+    } catch {
+      return null;
+    }
+
+    // Strip github.com/ or www.github.com/ if provided without protocol
+    str = str.replace(/^(?:https?:\/\/)?(?:www\.)?github\.com\//i, "");
+  }
+
+  // Strip leading and trailing slashes
   str = str.replace(/^\/+|\/+$/g, "");
 
+  // Take only the first two path segments
   const parts = str.split("/").filter(Boolean);
   if (parts.length < 2) {
     return null;
   }
 
-  const owner = parts[0];
-  const repo = parts[1];
+  const owner = parts[0].trim();
+  let repo = parts[1].trim();
 
-  // Validate owner and repo characters
-  const validOwner = /^[a-zA-Z0-9_.-]+$/.test(owner);
-  const validRepo = /^[a-zA-Z0-9_.-]+$/.test(repo);
+  // Strip trailing .git from repo name if present
+  repo = repo.replace(/\.git$/i, "");
 
-  if (!validOwner || !validRepo) {
+  // Validate they match /^[A-Za-z0-9_.-]+$/
+  const validPattern = /^[A-Za-z0-9_.-]+$/;
+  if (!validPattern.test(owner) || !validPattern.test(repo)) {
     return null;
   }
 
@@ -116,11 +139,10 @@ export function handleOctokitError(err) {
 
   if (
     status === 429 ||
-    (status === 403 && (
-      remaining === "0" ||
-      message.toLowerCase().includes("rate limit") ||
-      message.toLowerCase().includes("secondary rate limit")
-    ))
+    (status === 403 &&
+      (remaining === "0" ||
+        message.toLowerCase().includes("rate limit") ||
+        message.toLowerCase().includes("secondary rate limit")))
   ) {
     throw new GitHubError("GitHub rate limit reached, add a GITHUB_TOKEN", 429);
   }
@@ -129,11 +151,11 @@ export function handleOctokitError(err) {
 }
 
 /**
- * Fetches open pull requests and their details for a repository.
+ * Fetches open pull requests, detailed PR data, author history, and computed signals.
  *
  * @param {string} normalizedRepo - "owner/repo"
  * @param {number} limit - Number of PRs to fetch (1-20)
- * @returns {Promise<Array<{ payload: object, prSummary: object, headSha: string }>>}
+ * @returns {Promise<Array<{ payload: object, prSummary: object, headSha: string, signals: object }>>}
  */
 export async function fetchRepoPullRequests(normalizedRepo, limit = 10) {
   const [owner, repo] = normalizedRepo.split("/");
@@ -158,6 +180,16 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10) {
   if (openPRs.length === 0) {
     return [];
   }
+
+  // Pre-extract batch title summaries for similarity matching
+  const allPrsInBatch = openPRs.map((p) => ({
+    number: p.number,
+    title: p.title || "",
+  }));
+
+  // Look up author history once per unique author with 300ms gap and 30-min cache
+  const authorLogins = openPRs.map((p) => p.user?.login).filter(Boolean);
+  const authorHistory = await fetchAuthorHistoryBatch(octokit, owner, repo, authorLogins);
 
   // Cache user lookups during this request to avoid redundant calls
   const userCache = new Map();
@@ -205,7 +237,18 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10) {
         const detailedPr = detailedPrRes.data;
         const filesData = filesRes.data || [];
 
-        // 4. Build payload per PR
+        // Build signals and context object
+        const signals = buildSignals({
+          pr,
+          detailedPr,
+          files: filesData,
+          owner,
+          repo,
+          allPrsInBatch,
+          authorHistory,
+        });
+
+        // 4. Build payload per PR (with added context object)
         const payload = {
           number: pr.number,
           title: pr.title || "",
@@ -230,9 +273,10 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10) {
             deletions: f.deletions ?? 0,
             patch: f.patch ? String(f.patch).slice(0, 1500) : "",
           })),
+          context: signals,
         };
 
-        // Frontend PR summary shape
+        // Frontend PR summary shape (unchanged)
         const prSummary = {
           number: pr.number,
           title: pr.title || "",
@@ -252,6 +296,7 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10) {
           payload,
           prSummary,
           headSha,
+          signals,
         };
       } catch (err) {
         handleOctokitError(err);

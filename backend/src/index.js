@@ -43,9 +43,11 @@ app.post("/api/analyze", async (req, res, next) => {
     const normalizedRepo = normalizeRepo(repo);
     if (!normalizedRepo) {
       return res.status(400).json({
-        error: "Invalid repository format. Please provide 'owner/repo' or a valid GitHub URL.",
+        error: "Invalid GitHub repo. Paste a link like https://github.com/owner/repo",
       });
     }
+
+    console.log(`[PRobe] Normalized repo: ${normalizedRepo}`);
 
     // 2. limit: default 10, max 20
     const parsedLimit = parseLimit(limit);

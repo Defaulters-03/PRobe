@@ -1,5 +1,6 @@
 import { verdictCache } from "./cache.js";
 import { generateMockVerdict } from "./mockVerdict.js";
+import { hashContext } from "./signals.js";
 
 /**
  * Concurrently processes an array of items with a maximum concurrency limit.
@@ -27,28 +28,49 @@ export async function runWithConcurrency(items, limit, fn) {
 }
 
 /**
- * Analyzes a single PR using the external AI service or mock logic, with caching.
+ * Analyzes a single PR using trusted shortcut, cache, external AI service, or mock logic.
  *
  * @param {string} repo - The normalized repo name (owner/repo)
- * @param {object} item - Object containing { payload, prSummary, headSha }
- * @returns {Promise<{ pr: object, verdict: object | null, error?: string }>}
+ * @param {object} item - Object containing { payload, prSummary, headSha, signals }
+ * @returns {Promise<{ pr: object, verdict: object | null, signals: object, error?: string, skippedAsTrusted?: boolean }>}
  */
 export async function analyzeSinglePR(repo, item) {
-  const { payload, prSummary, headSha } = item;
-  const cacheKey = `${repo}#${payload.number}#${headSha}`;
+  const { payload, prSummary, headSha, signals } = item;
+  const context = payload.context || signals;
+  const authorAssociation = (context?.author_association || "").toUpperCase();
 
-  // 1. Check cache first
+  // 4. Trusted shortcut: OWNER, MEMBER, COLLABORATOR
+  if (["OWNER", "MEMBER", "COLLABORATOR"].includes(authorAssociation)) {
+    const verdict = {
+      label: "legit",
+      spam_score: 5,
+      reasons: [`Author is a repository ${authorAssociation}`],
+      suggested_action: "review",
+    };
+    return {
+      pr: prSummary,
+      verdict,
+      signals,
+      skippedAsTrusted: true,
+    };
+  }
+
+  // 8. Cache lookup with short context hash
+  const contextHash = hashContext(context);
+  const cacheKey = `${repo}#${payload.number}#${headSha}#${contextHash}`;
+
   const cachedVerdict = verdictCache.get(cacheKey);
   if (cachedVerdict) {
     return {
       pr: prSummary,
       verdict: cachedVerdict,
+      signals,
     };
   }
 
   const useMockAi = (process.env.USE_MOCK_AI || "true").toLowerCase() === "true";
 
-  // 2. Use mock AI if requested
+  // 7. Mock AI
   if (useMockAi) {
     try {
       const verdict = generateMockVerdict(payload);
@@ -56,17 +78,19 @@ export async function analyzeSinglePR(repo, item) {
       return {
         pr: prSummary,
         verdict,
+        signals,
       };
     } catch (err) {
       return {
         pr: prSummary,
         verdict: null,
+        signals,
         error: err.message || "Failed to generate mock verdict",
       };
     }
   }
 
-  // 3. Call external AI service
+  // 5. Call external AI service
   const baseUrl = (process.env.AI_SERVICE_URL || "http://localhost:8000").replace(/\/+$/, "");
   const analyzeUrl = `${baseUrl}/analyze`;
 
@@ -98,25 +122,45 @@ export async function analyzeSinglePR(repo, item) {
     return {
       pr: prSummary,
       verdict,
+      signals,
     };
   } catch (err) {
     return {
       pr: prSummary,
       verdict: null,
+      signals,
       error: err.message || "AI service request failed",
     };
   }
 }
 
 /**
- * Analyzes multiple PRs with a maximum concurrency of 3.
+ * Analyzes multiple PRs with a maximum concurrency of 5.
+ * Logs how many AI calls were skipped as trusted.
  *
  * @param {string} repo - The normalized repo name (owner/repo)
- * @param {Array<{ payload: object, prSummary: object, headSha: string }>} prItems
- * @returns {Promise<Array<{ pr: object, verdict: object | null, error?: string }>>}
+ * @param {Array<{ payload: object, prSummary: object, headSha: string, signals: object }>>} prItems
+ * @returns {Promise<Array<{ pr: object, verdict: object | null, signals: object, error?: string }>>}
  */
 export async function analyzePRs(repo, prItems) {
-  return runWithConcurrency(prItems, 3, async (item) => {
+  // Raise parallel AI calls from 3 to 5
+  const rawResults = await runWithConcurrency(prItems, 5, async (item) => {
     return analyzeSinglePR(repo, item);
+  });
+
+  const skippedAsTrustedCount = rawResults.filter((r) => r.skippedAsTrusted).length;
+  console.log(`[PRobe] Skipped ${skippedAsTrustedCount} AI call(s) as trusted.`);
+
+  // Clean internal flag before returning
+  return rawResults.map((r) => {
+    const resultItem = {
+      pr: r.pr,
+      verdict: r.verdict,
+      signals: r.signals,
+    };
+    if (r.error) {
+      resultItem.error = r.error;
+    }
+    return resultItem;
   });
 }
