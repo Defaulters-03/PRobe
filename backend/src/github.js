@@ -1,11 +1,58 @@
 import { Octokit } from "@octokit/rest";
 import dotenv from "dotenv";
 import { buildSignals, fetchAuthorHistoryBatch } from "./signals.js";
+import { authorLookupCache } from "./cache.js";
 
 dotenv.config();
 
 let octokitInstance = null;
 let tokenWarned = false;
+
+// In-flight map so concurrent requests for the same author share one call
+const authorInFlight = new Map();
+
+/**
+ * Looks up user info by username with a 30-minute cache and in-flight promise sharing.
+ *
+ * @param {Octokit} octokit
+ * @param {string} username
+ * @returns {Promise<object | null>}
+ */
+export function getAuthorInfo(octokit, username) {
+  if (!username) return Promise.resolve(null);
+
+  const cached = authorLookupCache.get(username);
+  if (cached !== undefined) {
+    return Promise.resolve(cached);
+  }
+
+  if (authorInFlight.has(username)) {
+    return authorInFlight.get(username);
+  }
+
+  const promise = (async () => {
+    try {
+      const res = await octokit.rest.users.getByUsername({ username });
+      const data = res.data;
+      authorLookupCache.set(username, data, 30 * 60 * 1000);
+      return data;
+    } catch (err) {
+      if (
+        err.status === 429 ||
+        (err.status === 403 && (err.message || "").toLowerCase().includes("rate limit"))
+      ) {
+        handleOctokitError(err);
+      }
+      authorLookupCache.set(username, null, 30 * 60 * 1000);
+      return null;
+    } finally {
+      authorInFlight.delete(username);
+    }
+  })();
+
+  authorInFlight.set(username, promise);
+  return promise;
+}
 
 export class GitHubError extends Error {
   constructor(message, statusCode) {
@@ -196,30 +243,6 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10, page = 1
   const authorLogins = openPRs.map((p) => p.user?.login).filter(Boolean);
   const authorHistory = await fetchAuthorHistoryBatch(octokit, owner, repo, authorLogins);
 
-  // Cache user lookups during this request to avoid redundant calls
-  const userCache = new Map();
-
-  async function getUserInfo(username) {
-    if (!username) return null;
-    if (userCache.has(username)) {
-      return userCache.get(username);
-    }
-    try {
-      const res = await octokit.rest.users.getByUsername({ username });
-      userCache.set(username, res.data);
-      return res.data;
-    } catch (err) {
-      if (
-        err.status === 429 ||
-        (err.status === 403 && (err.message || "").toLowerCase().includes("rate limit"))
-      ) {
-        handleOctokitError(err);
-      }
-      userCache.set(username, null);
-      return null;
-    }
-  }
-
   const items = await Promise.all(
     openPRs.map(async (pr) => {
       try {
@@ -233,10 +256,10 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10, page = 1
             owner,
             repo,
             pull_number: pr.number,
-            per_page: 5,
+            per_page: 3,
             page: 1,
           }),
-          getUserInfo(pr.user?.login),
+          getAuthorInfo(octokit, pr.user?.login),
         ]);
 
         const detailedPr = detailedPrRes.data;
@@ -271,7 +294,7 @@ export async function fetchRepoPullRequests(normalizedRepo, limit = 10, page = 1
             additions: detailedPr.additions ?? 0,
             deletions: detailedPr.deletions ?? 0,
           },
-          files: filesData.slice(0, 5).map((f) => ({
+          files: filesData.slice(0, 3).map((f) => ({
             filename: f.filename || "",
             status: f.status || "",
             additions: f.additions ?? 0,
