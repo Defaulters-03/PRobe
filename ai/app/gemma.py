@@ -25,7 +25,7 @@ def parse_model_response(raw_text: str) -> GemmaRawOutput:
     - extract the first {...} block
     - validate with pydantic
     """
-    cleaned = raw_text.strip()
+    cleaned = (raw_text or "").strip()
 
     # Strip code block fences if present (```json ... ``` or ``` ... ```)
     fence_pattern = r"```(?:json)?\s*([\s\S]*?)\s*```"
@@ -37,7 +37,7 @@ def parse_model_response(raw_text: str) -> GemmaRawOutput:
     start_idx = cleaned.find("{")
     end_idx = cleaned.rfind("}")
     if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
-        raise ValueError(f"Could not locate valid JSON object in response: {raw_text[:200]}")
+        raise ValueError(f"Could not locate valid JSON object in response: {cleaned[:200]}")
 
     json_str = cleaned[start_idx : end_idx + 1]
     parsed_json = json.loads(json_str)
@@ -50,13 +50,19 @@ async def execute_model_call(
     client: genai.Client,
     model: str,
     prompt: str,
-    timeout: float = 30.0,
+    timeout: float = 5.0,
 ) -> str:
-    """Execute generate_content in a thread pool with temperature=0.1 and strict 30s timeout."""
+    """Execute generate_content in a thread pool with temperature=0.1, max_output_tokens=150, minimal thinking, and 5s timeout."""
     loop = asyncio.get_running_loop()
 
     def _call() -> str:
-        config = types.GenerateContentConfig(temperature=0.1)
+        config = types.GenerateContentConfig(
+            temperature=0.1,
+            max_output_tokens=150,
+            thinking_config=types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel.MINIMAL
+            ),
+        )
         response = client.models.generate_content(
             model=model,
             contents=prompt,
@@ -70,7 +76,7 @@ async def execute_model_call(
 async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
     """
     Analyze a PR using the Gemma 4 model with fallback to heuristics.
-    Retries once on call/parse failure before falling back.
+    Strict 5s timeout per attempt, retries once on call/timeout/parse failure before falling back.
     """
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -89,14 +95,14 @@ async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
 
     last_error: Optional[Exception] = None
 
-    # Call with 1 retry (total 2 attempts)
+    # Call with 1 retry (total 2 attempts, 5s timeout each)
     for attempt in range(1, 3):
         try:
             raw_text = await execute_model_call(
                 client=client,
                 model=model_name,
                 prompt=prompt,
-                timeout=30.0,
+                timeout=5.0,
             )
             raw_output = parse_model_response(raw_text)
 
@@ -141,8 +147,8 @@ async def analyze_pull_request(pr: AnalyzeRequest) -> AnalyzeResponse:
 
         except asyncio.TimeoutError as te:
             last_error = te
-            print(f"[Gemma Model Call] Attempt {attempt} timed out after 30s", flush=True)
-            logger.warning(f"Gemma model call attempt {attempt} timed out")
+            print(f"[Gemma Model Call] Attempt {attempt} timed out after 5s", flush=True)
+            logger.warning(f"Gemma model call attempt {attempt} timed out after 5s")
         except Exception as ex:
             last_error = ex
             print(f"[Gemma Model Call] Attempt {attempt} failed: {ex}", flush=True)
